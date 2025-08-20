@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from camera import open_capture
 from detection import find_a4_quad, warp_a4, a4_scale_mm_per_px
-from measure import segment_object, largest_inner_contour, classify_and_measure, annotate_result
+from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result
 from utils import draw_text
 from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS
 
@@ -72,19 +72,19 @@ def main():
 
             warped, _ = warp_a4(frame2, quad)
             mm_per_px_x, mm_per_px_y = a4_scale_mm_per_px()
-
             mask = segment_object(warped)
-            cnt = largest_inner_contour(mask)
-            result = None
-            if cnt is not None:
-                # Reject tiny objects
-                area_px = cv2.contourArea(cnt)
+            cnts = all_inner_contours(mask)
+            results = []
+            if cnts:
                 from config import MIN_OBJECT_AREA_MM2, PX_PER_MM
                 min_area_px = MIN_OBJECT_AREA_MM2 * (PX_PER_MM**2)
-                if area_px >= min_area_px:
-                    result = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y)
+                for cnt in cnts:
+                    if cv2.contourArea(cnt) e= min_area_px:
+                        r = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y)
+                        if r is not None:
+                            results.append(r)
 
-            if result is None:
+            if not results:
                 print("[RESULT] No valid object found fully inside A4.")
                 overlay = warped.copy()
                 draw_text(overlay, "No valid object detected.", (20, 40), (0,0,255), 0.9, 2)
@@ -97,12 +97,14 @@ def main():
                 cv2.resizeWindow("Result", display_width, display_height)
                 cv2.imshow("Result", overlay_resized)
             else:
-                if result["type"] == "circle":
-                    print(f"[RESULT] Circle - Diameter: {result['diameter_mm']:.2f} mm")
-                else:
-                    print(f"[RESULT] Rectangle - Width: {result['width_mm']:.2f} mm, Height: {result['height_mm']:.2f} mm")
+                # Print summary
+                for r in results:
+                    if r["type"] == "circle":
+                        print(f"[RESULT] Circle - Diameter: {r['diameter_mm']:.2f} mm")
+                    else:
+                        print(f"[RESULT] Rectangle - Width: {r['width_mm']:.2f} mm, Height: {r['height_mm']:.2f} mm")
 
-                annotated = annotate_result(warped, result, (mm_per_px_x, mm_per_px_y))
+                annotated = annotate_results(warped, results, (mm_per_px_x, mm_per_px_y))
                 # Resize for display
                 display_height = 800  # Target display height
                 scale = display_height / annotated.shape[0]
@@ -110,6 +112,7 @@ def main():
                 annotated_resized = cv2.resize(annotated, (display_width, display_height))
                 cv2.namedWindow("Result", cv2.WINDOW_NORMAL)
                 cv2.resizeWindow("Result", display_width, display_height)
+                cv2.imshow("Result", annotated_resized)
                 cv2.imshow("Result", annotated_resized)
 
             print("[INFO] Press any key in the window to resume scanning, or ESC to exit.")

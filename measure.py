@@ -20,13 +20,13 @@ def segment_object(a4_bgr):
     return bw
 
 def largest_inner_contour(mask, margin_px= int(8*PX_PER_MM)):
+    # Deprecated in favor of all_inner_contours; keep for backward compatibility
     h, w = mask.shape[:2]
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     best = None
     best_area = 0
     for cnt in contours:
         x,y,ww,hh = cv2.boundingRect(cnt)
-        # Ignore contours touching the page edges (within margin)
         if x <= margin_px or y <= margin_px or (x+ww) >= (w - margin_px) or (y+hh) >= (h - margin_px):
             continue
         area = cv2.contourArea(cnt)
@@ -34,6 +34,23 @@ def largest_inner_contour(mask, margin_px= int(8*PX_PER_MM)):
             best = cnt
             best_area = area
     return best
+
+def all_inner_contours(mask, margin_px=int(8*PX_PER_MM)):
+    # Find all valid inner contours (excluding edges), including nested ones
+    h, w = mask.shape[:2]
+    contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    valid = []
+    for idx, cnt in enumerate(contours):
+        x, y, ww, hh = cv2.boundingRect(cnt)
+        if x <= margin_px or y <= margin_px or (x+ww) >= (w - margin_px) or (y+hh) >= (h - margin_px):
+            continue
+        area = cv2.contourArea(cnt)
+        if area <= 0:
+            continue
+        valid.append(cnt)
+    # Sort by area descending to make labeling deterministic
+    valid.sort(key=lambda c: cv2.contourArea(c), reverse=True)
+    return valid
 
 def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
     # Compute circularity
@@ -77,63 +94,55 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
         }
 
 def annotate_result(a4_bgr, result, mm_per_px):
+    # Backward-compatible single-result annotation
+    return annotate_results(a4_bgr, [result], mm_per_px)
+
+def annotate_results(a4_bgr, results, mm_per_px):
     out = a4_bgr.copy()
-    if result["type"] == "circle":
-        center = result["center"]
-        radius_px = int(result["radius_px"])
-        # Draw circle with thicker line
-        cv2.circle(out, center, radius_px, (0, 255, 0), 3)
-        # Draw diameter line horizontally
-        x0 = center[0] - radius_px
-        x1 = center[0] + radius_px
-        y = center[1]
-        cv2.line(out, (x0, y), (x1, y), (255, 0, 0), 3)
-        
-        # Draw dimension text with background for better visibility
-        text = f"Diameter: {result['diameter_mm']:.1f} mm"
-        # Add background rectangle for text
-        text_size = cv2.getTextSize(text, DRAW_FONT, 1.2, 3)[0]
-        cv2.rectangle(out, (10, 10), (20 + text_size[0], 50), (255, 255, 255), -1)
-        draw_text(out, text, (15, 35), (0, 0, 255), 1.2, 3)
-        
-        # Also draw text near the object
-        center_text = f"{result['diameter_mm']:.1f}mm"
-        text_pos = (center[0] - 40, center[1] - radius_px - 10)
-        cv2.rectangle(out, (text_pos[0] - 5, text_pos[1] - 25), 
-                     (text_pos[0] + 85, text_pos[1] + 5), (255, 255, 255), -1)
-        draw_text(out, center_text, text_pos, (0, 0, 255), 0.8, 2)
-    else:
-        box = result["box"]
-        cv2.drawContours(out, [box], 0, (0, 255, 0), 3)
-        width_mm = result["width_mm"]
-        height_mm = result["height_mm"]
-        
-        # Draw dimension text with background for better visibility
-        text1 = f"Width: {width_mm:.1f} mm"
-        text2 = f"Height: {height_mm:.1f} mm"
-        
-        # Add background rectangle for text
-        text_size1 = cv2.getTextSize(text1, DRAW_FONT, 1.2, 3)[0]
-        text_size2 = cv2.getTextSize(text2, DRAW_FONT, 1.2, 3)[0]
-        max_width = max(text_size1[0], text_size2[0])
-        cv2.rectangle(out, (10, 10), (20 + max_width, 90), (255, 255, 255), -1)
-        draw_text(out, text1, (15, 35), (0, 0, 255), 1.2, 3)
-        draw_text(out, text2, (15, 70), (0, 0, 255), 1.2, 3)
-        
-        # Draw dimension lines with measurements
-        # Calculate center of box
-        center_x = int(np.mean(box[:, 0]))
-        center_y = int(np.mean(box[:, 1]))
-        
-        # Draw width dimension
-        mid_left = ((box[0] + box[3]) / 2).astype(int)
-        mid_right = ((box[1] + box[2]) / 2).astype(int)
-        cv2.arrowedLine(out, tuple(mid_left), tuple(mid_right), (255, 0, 0), 2, tipLength=0.02)
-        cv2.arrowedLine(out, tuple(mid_right), tuple(mid_left), (255, 0, 0), 2, tipLength=0.02)
-        
-        # Draw height dimension
-        mid_top = ((box[0] + box[1]) / 2).astype(int)
-        mid_bottom = ((box[2] + box[3]) / 2).astype(int)
-        cv2.arrowedLine(out, tuple(mid_top), tuple(mid_bottom), (0, 0, 255), 2, tipLength=0.02)
-        cv2.arrowedLine(out, tuple(mid_bottom), tuple(mid_top), (0, 0, 255), 2, tipLength=0.02)
+    # Color palette for multiple objects
+    colors = [
+        (0, 255, 0), (255, 0, 0), (0, 0, 255),
+        (255, 255, 0), (255, 0, 255), (0, 255, 255),
+        (128, 255, 0), (0, 128, 255), (255, 128, 0)
+    ]
+    y_text = 20
+    idx = 0
+    for res in results:
+        color = colors[idx % len(colors)]
+        if res["type"] == "circle":
+            center = res["center"]
+            radius_px = int(res["radius_px"])
+            cv2.circle(out, center, radius_px, color, 3)
+            # diameter line
+            x0 = center[0] - radius_px
+            x1 = center[0] + radius_px
+            y = center[1]
+            cv2.line(out, (x0, y), (x1, y), color, 2)
+            text = f"#{idx+1} Circle: D={res['diameter_mm']:.1f}mm (R={res['diameter_mm']/2:.1f}mm)"
+            # Background
+            ts = cv2.getTextSize(text, DRAW_FONT, 0.9, 2)[0]
+            cv2.rectangle(out, (10, y_text-18), (20 + ts[0], y_text+6), (255,255,255), -1)
+            draw_text(out, text, (15, y_text), (0,0,0), 0.9, 2)
+            # Near object label
+            near = (center[0] + 5, max(20, center[1] - radius_px - 8))
+            draw_text(out, f"D={res['diameter_mm']:.0f}mm", near, color, 0.8, 2)
+            y_text += 28
+        else:
+            box = res["box"]
+            cv2.drawContours(out, [box], 0, color, 3)
+            text1 = f"#{idx+1} Rect: W={res['width_mm']:.1f}mm, H={res['height_mm']:.1f}mm"
+            ts = cv2.getTextSize(text1, DRAW_FONT, 0.9, 2)[0]
+            cv2.rectangle(out, (10, y_text-18), (20 + ts[0], y_text+6), (255,255,255), -1)
+            draw_text(out, text1, (15, y_text), (0,0,0), 0.9, 2)
+            y_text += 28
+            # Dimension arrows
+            mid_left = ((box[0] + box[3]) / 2).astype(int)
+            mid_right = ((box[1] + box[2]) / 2).astype(int)
+            cv2.arrowedLine(out, tuple(mid_left), tuple(mid_right), color, 2, tipLength=0.02)
+            cv2.arrowedLine(out, tuple(mid_right), tuple(mid_left), color, 2, tipLength=0.02)
+            mid_top = ((box[0] + box[1]) / 2).astype(int)
+            mid_bottom = ((box[2] + box[3]) / 2).astype(int)
+            cv2.arrowedLine(out, tuple(mid_top), tuple(mid_bottom), color, 2, tipLength=0.02)
+            cv2.arrowedLine(out, tuple(mid_bottom), tuple(mid_top), color, 2, tipLength=0.02)
+        idx += 1
     return out
