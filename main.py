@@ -79,7 +79,8 @@ def main():
                 from config import MIN_OBJECT_AREA_MM2, PX_PER_MM
                 min_area_px = MIN_OBJECT_AREA_MM2 * (PX_PER_MM**2)
                 for cnt in cnts:
-                    if cv2.contourArea(cnt) e= min_area_px:
+                    # Filter out contours smaller than minimum area (in pixels)
+                    if cv2.contourArea(cnt) >= min_area_px:
                         r = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y)
                         if r is not None:
                             results.append(r)
@@ -112,7 +113,6 @@ def main():
                 annotated_resized = cv2.resize(annotated, (display_width, display_height))
                 cv2.namedWindow("Result", cv2.WINDOW_NORMAL)
                 cv2.resizeWindow("Result", display_width, display_height)
-                cv2.imshow("Result", annotated_resized)
                 cv2.imshow("Result", annotated_resized)
 
             print("[INFO] Press any key in the window to resume scanning, or ESC to exit.")
