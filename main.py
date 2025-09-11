@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 from camera import open_capture
 from detection import find_a4_quad, warp_a4, a4_scale_mm_per_px
-from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result
+from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result, detect_inner_circles, detect_inner_rectangles
 from utils import draw_text
 from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS
 
@@ -81,9 +81,17 @@ def main():
                 for cnt in cnts:
                     # Filter out contours smaller than minimum area (in pixels)
                     if cv2.contourArea(cnt) >= min_area_px:
+                        # Add outer shape (rectangle/circle) of the object
                         r = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y)
                         if r is not None:
                             results.append(r)
+                        # Detect inner prominent shapes (one circle and one rectangle)
+                        inner_c = detect_inner_circles(warped, mask, cnt, mm_per_px_x)
+                        if inner_c:
+                            results.extend(inner_c)
+                        inner_r = detect_inner_rectangles(warped, mask, cnt, mm_per_px_x, mm_per_px_y)
+                        if inner_r:
+                            results.extend(inner_r)
 
             if not results:
                 print("[RESULT] No valid object found fully inside A4.")
