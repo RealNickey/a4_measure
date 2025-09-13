@@ -4,14 +4,49 @@ import numpy as np
 from camera import open_capture
 from detection import find_a4_quad, warp_a4, a4_scale_mm_per_px
 from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result, detect_inner_circles, detect_inner_rectangles
+from hit_testing import HitTestingEngine
 from utils import draw_text
-from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS
+from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS, DRAW_FONT, HOVER_SNAP_DISTANCE_MM, PREVIEW_COLOR, SELECTION_COLOR
 
 def corners_stable(prev, curr, tol):
     if prev is None or curr is None:
         return False
     d = np.linalg.norm(prev - curr, axis=1).mean()
     return d <= tol
+
+def reset_scan_state():
+    """Reset all scanning state variables for clean mode transitions."""
+    return 0, None  # stable_count, last_quad
+
+def cleanup_resources(cap=None, window_names=None):
+    """Properly clean up camera and OpenCV resources."""
+    if cap is not None:
+        try:
+            cap.release()
+        except Exception as e:
+            print(f"[WARN] Error releasing camera: {e}")
+    
+    if window_names:
+        for window_name in window_names:
+            try:
+                cv2.destroyWindow(window_name)
+            except Exception as e:
+                print(f"[WARN] Error destroying window {window_name}: {e}")
+    else:
+        try:
+            cv2.destroyAllWindows()
+        except Exception as e:
+            print(f"[WARN] Error destroying all windows: {e}")
+
+def reinitialize_camera(ip_base):
+    """Re-initialize camera capture with proper error handling."""
+    try:
+        cap, tried_ip = open_capture(ip_base if ip_base else None)
+        print(f"[INFO] Camera re-initialized: {'IP Camera' if tried_ip else 'Webcam'}")
+        return cap, tried_ip
+    except Exception as e:
+        print(f"[ERROR] Failed to re-initialize camera: {e}")
+        return None, False
 
 def main():
     print("=== A4 Object Dimension Scanner ===")
@@ -23,9 +58,7 @@ def main():
     cv2.namedWindow("Scan", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Scan", 800, 600)  # Set default size for scan window
 
-    stable_count = 0
-    last_quad = None
-    pause_for_processing = False
+    stable_count, last_quad = reset_scan_state()
 
     while True:
         ok, frame = cap.read()
@@ -68,7 +101,8 @@ def main():
             if not ok2:
                 frame2 = frame.copy()
             # Stop/flush the video to free resources during processing for consistency
-            cap.release()
+            cleanup_resources(cap=cap)
+            cap = None
 
             warped, _ = warp_a4(frame2, quad)
             mm_per_px_x, mm_per_px_y = a4_scale_mm_per_px()
@@ -93,56 +127,84 @@ def main():
                         if inner_r:
                             results.extend(inner_r)
 
-            if not results:
-                print("[RESULT] No valid object found fully inside A4.")
-                overlay = warped.copy()
-                draw_text(overlay, "No valid object detected.", (20, 40), (0,0,255), 0.9, 2)
-                # Resize for display
-                display_height = 800  # Target display height
-                scale = display_height / overlay.shape[0]
-                display_width = int(overlay.shape[1] * scale)
-                overlay_resized = cv2.resize(overlay, (display_width, display_height))
-                cv2.namedWindow("Result", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow("Result", display_width, display_height)
-                cv2.imshow("Result", overlay_resized)
-            else:
-                # Print summary
-                for r in results:
-                    if r["type"] == "circle":
-                        print(f"[RESULT] Circle - Diameter: {r['diameter_mm']:.2f} mm")
-                    else:
-                        print(f"[RESULT] Rectangle - Width: {r['width_mm']:.2f} mm, Height: {r['height_mm']:.2f} mm")
-
-                annotated = annotate_results(warped, results, (mm_per_px_x, mm_per_px_y))
-                # Resize for display
-                display_height = 800  # Target display height
-                scale = display_height / annotated.shape[0]
-                display_width = int(annotated.shape[1] * scale)
-                annotated_resized = cv2.resize(annotated, (display_width, display_height))
-                cv2.namedWindow("Result", cv2.WINDOW_NORMAL)
-                cv2.resizeWindow("Result", display_width, display_height)
-                cv2.imshow("Result", annotated_resized)
-
-            print("[INFO] Press any key in the window to resume scanning, or ESC to exit.")
-            key = cv2.waitKey(0) & 0xFF
-            if key == 27:
-                break
-            # Close result window
+            window_name = "Inspect Mode"
+            inspect_exit_flag = False
+            
             try:
-                cv2.destroyWindow("Result")
-            except Exception:
-                pass
+                cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-            # Re-open capture and reset stability
-            cap, tried_ip = open_capture(ip_base if ip_base else None)
-            stable_count = 0
-            last_quad = None
+                if not results:
+                    print("[RESULT] No valid object found fully inside A4.")
+                    base = warped.copy()
+                    draw_text(base, "No valid object detected.", (20, 40), (0,0,255), 0.9, 2)
+                    display_height = 800
+                    scale = display_height / base.shape[0]
+                    display_width = int(base.shape[1] * scale)
+                    cv2.resizeWindow(window_name, display_width, display_height)
+                    disp = cv2.resize(base, (display_width, display_height))
+                    cv2.imshow(window_name, disp)
+                    print("[INFO] Press any key in the window to resume scanning, or ESC to exit.")
+                    key = cv2.waitKey(0) & 0xFF
+                    if key == 27:
+                        inspect_exit_flag = True
+                else:
+                    # Build interactive 'inspect' mode using new selective rendering engine
+                    from measure import create_shape_data
+                    from interaction_manager import setup_interactive_inspect_mode
+                    
+                    # Convert measurement results to shape data format
+                    shapes = []
+                    for r in results:
+                        shape_data = create_shape_data(r)
+                        if shape_data is not None:
+                            shapes.append(shape_data)
 
-    try:
-        cap.release()
-    except Exception:
-        pass
-    cv2.destroyAllWindows()
+                    # Setup interactive inspect mode with new rendering engine
+                    manager = setup_interactive_inspect_mode(shapes, warped, window_name)
+                    
+                    print("\n[INSPECT MODE] Hover over shapes to preview, click to inspect.")
+                    print("Press any key to resume scanning (ESC to exit).")
+                    
+                    while True:
+                        k = cv2.waitKey(20) & 0xFF
+                        if k != 255:  # any key pressed
+                            if k == 27:  # ESC - exit application entirely
+                                inspect_exit_flag = True
+                                print("[INFO] ESC pressed - exiting application.")
+                            else:
+                                print("[INFO] Returning to scan mode.")
+                            break
+                    
+                    # Cleanup interactive mode resources
+                    try:
+                        manager.cleanup()
+                    except Exception as e:
+                        print(f"[WARN] Error during manager cleanup: {e}")
+
+            except Exception as e:
+                print(f"[ERROR] Error in inspect mode: {e}")
+                inspect_exit_flag = True
+            finally:
+                # Ensure inspect mode window is properly destroyed
+                cleanup_resources(window_names=[window_name])
+            
+            # Exit application if ESC was pressed in inspect mode
+            if inspect_exit_flag:
+                break
+            
+            # Re-initialize camera and reset scan state for clean transition back to scan mode
+            print("[INFO] Re-initializing camera for scan mode...")
+            cap, tried_ip = reinitialize_camera(ip_base)
+            if cap is None:
+                print("[ERROR] Failed to re-initialize camera. Exiting.")
+                break
+            
+            # Reset all scan state variables for clean transition
+            stable_count, last_quad = reset_scan_state()
+            print("[INFO] Scan state reset. Ready for new detection.")
+
+    # Final cleanup
+    cleanup_resources(cap=cap)
 
 if __name__ == "__main__":
     main()

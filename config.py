@@ -41,3 +41,8 @@ DRAW_THICKNESS = 2
 
 # If CUDA is available in OpenCV, we can use GPU for Canny/resize.
 USE_CUDA_IF_AVAILABLE = True
+
+# Interactive hit testing configuration
+HOVER_SNAP_DISTANCE_MM = 10.0  # Distance threshold for hover snapping (in mm)
+PREVIEW_COLOR = (0, 200, 200)  # Color for hover preview outlines (cyan)
+SELECTION_COLOR = (0, 255, 0)  # Color for selected shape rendering (green)

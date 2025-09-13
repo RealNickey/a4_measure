@@ -3,6 +3,7 @@ import numpy as np
 from config import (BINARY_BLOCK_SIZE, BINARY_C, MIN_OBJECT_AREA_MM2, PX_PER_MM,
                     CIRCULARITY_CUTOFF, RECT_ANGLE_EPS_DEG, DRAW_FONT, DRAW_THICKNESS)
 from utils import draw_text
+from hit_testing import create_hit_testing_contour
 
 def _area_px2_from_mm2(mm2):
     # Convert mm^2 to px^2 given PX_PER_MM
@@ -51,6 +52,37 @@ def all_inner_contours(mask, margin_px=int(8*PX_PER_MM)):
     valid.sort(key=lambda c: cv2.contourArea(c), reverse=True)
     return valid
 
+# Hit testing polygon creation functions moved to hit_testing.py module
+
+def create_shape_data(measurement_result, contour=None):
+    """Convert measurement result to interactive shape data structure"""
+    if measurement_result is None:
+        return None
+    
+    # The measurement result already contains all needed fields from classify_and_measure
+    # Just ensure all required fields are present and properly formatted
+    shape_data = {
+        "type": measurement_result["type"],
+        "inner": measurement_result.get("inner", False),
+        "hit_contour": measurement_result["hit_contour"],
+        "area_px": measurement_result["area_px"]
+    }
+    
+    if measurement_result["type"] == "circle":
+        shape_data.update({
+            "diameter_mm": float(measurement_result["diameter_mm"]),
+            "center": tuple(measurement_result["center"]),
+            "radius_px": float(measurement_result["radius_px"])
+        })
+    else:  # rectangle
+        shape_data.update({
+            "width_mm": float(measurement_result["width_mm"]),
+            "height_mm": float(measurement_result["height_mm"]),
+            "box": measurement_result["box"]
+        })
+    
+    return shape_data
+
 def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
     # Compute circularity
     area = cv2.contourArea(cnt)
@@ -65,11 +97,16 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
         (x, y), radius = cv2.minEnclosingCircle(cnt)
         diameter_px = 2.0 * radius
         diameter_mm = diameter_px * mm_per_px_x  # assume isotropic scale
+        center = (int(x), int(y))
+        hit_contour = create_hit_testing_contour('circle', center=center, radius_px=radius)
         return {
             "type": "circle",
             "diameter_mm": diameter_mm,
-            "center": (int(x), int(y)),
-            "radius_px": radius
+            "center": center,
+            "radius_px": radius,
+            "hit_contour": hit_contour,
+            "area_px": area,
+            "inner": False
         }
     else:
         # Rectangle-like using minAreaRect
@@ -83,13 +120,17 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
         width_mm = width_px * mm_per_px_x
         height_mm = height_px * mm_per_px_y
         box = cv2.boxPoints(rect).astype(int)
+        hit_contour = create_hit_testing_contour('rectangle', box=box)
 
         # Optional right-angle sanity (not strictly enforced)
         return {
             "type": "rectangle",
             "width_mm": width_mm,
             "height_mm": height_mm,
-            "box": box
+            "box": box,
+            "hit_contour": hit_contour,
+            "area_px": area,
+            "inner": False
         }
 
 def annotate_result(a4_bgr, result, mm_per_px):
@@ -188,12 +229,18 @@ def detect_inner_circles(a4_bgr, object_mask, object_cnt, mm_per_px_x, min_radiu
     cx, cy, r = max(circles, key=lambda c: c[2])
     full_cx = int(cx + x)
     full_cy = int(cy + y)
+    center = (full_cx, full_cy)
     diameter_mm = (2.0 * r) * mm_per_px_x
+    hit_contour = create_hit_testing_contour('circle', center=center, radius_px=float(r))
+    area_px = np.pi * (r ** 2)
+    
     return [{
         "type": "circle",
         "diameter_mm": diameter_mm,
-        "center": (full_cx, full_cy),
+        "center": center,
         "radius_px": float(r),
+        "hit_contour": hit_contour,
+        "area_px": area_px,
         "inner": True
     }]
 
@@ -240,11 +287,16 @@ def detect_inner_rectangles(a4_bgr, object_mask, object_cnt, mm_per_px_x, mm_per
     # map box to full image coords
     box[:, 0] += x
     box[:, 1] += y
+    hit_contour = create_hit_testing_contour('rectangle', box=box)
+    area_px = cv2.contourArea(box)
+    
     return [{
         "type": "rectangle",
         "width_mm": float(width_mm),
         "height_mm": float(height_mm),
         "box": box,
+        "hit_contour": hit_contour,
+        "area_px": area_px,
         "inner": True
     }]
 
