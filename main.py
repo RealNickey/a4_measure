@@ -51,8 +51,24 @@ def reinitialize_camera(ip_base):
 def main():
     print("=== A4 Object Dimension Scanner ===")
     ip_base = input("Enter IP camera base URL (e.g. http://192.168.1.7:8080) or leave empty to use webcam: ").strip()
-    cap, tried_ip = open_capture(ip_base if ip_base else None)
+    
+    # Ask about high-resolution preference
+    high_res_input = input("Enable high-resolution mode for 4K+ cameras? (y/N): ").strip().lower()
+    prefer_high_res = high_res_input in ['y', 'yes']
+    
+    cap, tried_ip = open_capture(ip_base if ip_base else None, prefer_high_resolution=prefer_high_res)
     print("[INFO] Video source:", "IP Camera" if tried_ip else "Webcam")
+    
+    # Get and display camera information
+    from camera import get_camera_info, optimize_camera_for_detection
+    camera_info = get_camera_info(cap)
+    if camera_info:
+        print(f"[INFO] Camera resolution: {camera_info['width']}x{camera_info['height']} "
+              f"({camera_info['category']}, {camera_info['megapixels']:.1f}MP)")
+        print(f"[INFO] Camera FPS: {camera_info['fps']:.1f}")
+        
+        # Optimize camera settings
+        optimize_camera_for_detection(cap)
 
     # Create windows with proper sizing
     cv2.namedWindow("Scan", cv2.WINDOW_NORMAL)
@@ -205,6 +221,26 @@ def main():
 
     # Final cleanup
     cleanup_resources(cap=cap)
+    
+    # Cleanup detection resources
+    from detection import cleanup_detection_resources, get_detection_performance_stats
+    
+    # Print performance stats if available
+    perf_stats = get_detection_performance_stats()
+    if perf_stats:
+        print("\n[PERFORMANCE] Detection performance summary:")
+        if "detection_processing" in perf_stats:
+            dp = perf_stats["detection_processing"]
+            print(f"  Average detection time: {dp['avg_ms']:.2f}ms")
+            print(f"  Detection count: {dp['count']}")
+        
+        if "current_profile" in perf_stats:
+            print(f"  Resolution profile used: {perf_stats['current_profile']}")
+        
+        if "gpu_available" in perf_stats:
+            print(f"  GPU acceleration: {'Used' if perf_stats['gpu_available'] else 'Not available'}")
+    
+    cleanup_detection_resources()
 
 if __name__ == "__main__":
     main()
