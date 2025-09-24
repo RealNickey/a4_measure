@@ -46,3 +46,26 @@ USE_CUDA_IF_AVAILABLE = True
 HOVER_SNAP_DISTANCE_MM = 10.0  # Distance threshold for hover snapping (in mm)
 PREVIEW_COLOR = (0, 200, 200)  # Color for hover preview outlines (cyan)
 SELECTION_COLOR = (0, 255, 0)  # Color for selected shape rendering (green)
+
+# Manual selection configuration
+MIN_SELECTION_SIZE_PX = 20  # Minimum selection rectangle size in pixels
+MAX_SELECTION_AREA_RATIO = 0.8  # Maximum shape area as ratio of selection area
+SELECTION_SNAP_DISTANCE_PX = 15  # Distance threshold for shape snapping in pixels
+MANUAL_SELECTION_TIMEOUT_MS = 5000  # Timeout for manual selection operations in milliseconds
+
+# Enhanced contour analysis parameters
+ENHANCED_GAUSSIAN_BLOCK_SIZE = 31  # Block size for adaptive Gaussian thresholding (must be odd)
+ENHANCED_GAUSSIAN_C = 7.0  # Constant subtracted from mean in adaptive thresholding
+ENHANCED_MIN_CONTOUR_AREA = 100  # Minimum contour area for enhanced analysis
+ENHANCED_MORPHOLOGY_KERNEL_SIZE = 3  # Kernel size for morphological operations
+
+# Shape detection thresholds
+MIN_CIRCULARITY_THRESHOLD = 0.6  # Minimum circularity for circle detection (0.0-1.0)
+MIN_RECTANGULARITY_THRESHOLD = 0.7  # Minimum rectangularity for rectangle detection (0.0-1.0)
+SHAPE_CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence score for shape acceptance (0.0-1.0)
+
+# Error handling and fallback parameters
+MAX_SELECTION_RETRIES = 3  # Maximum number of selection retry attempts
+FALLBACK_TO_STANDARD_THRESHOLD = True  # Enable fallback to standard thresholding
+ERROR_MESSAGE_DISPLAY_TIME_MS = 3000  # Duration to display error messages in milliseconds
+ENABLE_SELECTION_VALIDATION = True  # Enable comprehensive selection validation

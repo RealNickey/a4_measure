@@ -132,7 +132,7 @@ def main():
                     # Filter out contours smaller than minimum area (in pixels)
                     if cv2.contourArea(cnt) >= min_area_px:
                         # Add outer shape (rectangle/circle) of the object
-                        r = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y)
+                        r = classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, "automatic")
                         if r is not None:
                             results.append(r)
                         # Detect inner prominent shapes (one circle and one rectangle)
@@ -164,9 +164,9 @@ def main():
                     if key == 27:
                         inspect_exit_flag = True
                 else:
-                    # Build interactive 'inspect' mode using new selective rendering engine
+                    # Build enhanced interactive 'inspect' mode with manual selection support
                     from measure import create_shape_data
-                    from interaction_manager import setup_interactive_inspect_mode
+                    from extended_interaction_manager import setup_extended_interactive_inspect_mode
                     
                     # Convert measurement results to shape data format
                     shapes = []
@@ -175,21 +175,30 @@ def main():
                         if shape_data is not None:
                             shapes.append(shape_data)
 
-                    # Setup interactive inspect mode with new rendering engine
-                    manager = setup_interactive_inspect_mode(shapes, warped, window_name)
+                    # Setup extended interactive inspect mode with manual selection capabilities
+                    manager = setup_extended_interactive_inspect_mode(shapes, warped, window_name)
                     
-                    print("\n[INSPECT MODE] Hover over shapes to preview, click to inspect.")
+                    print("\n[ENHANCED INSPECT MODE] Interactive shape inspection with manual selection support.")
+                    print("Hover over shapes to preview, click to inspect.")
+                    print("Use 'M' to cycle between AUTO → MANUAL RECT → MANUAL CIRCLE modes.")
                     print("Press any key to resume scanning (ESC to exit).")
                     
                     while True:
                         k = cv2.waitKey(20) & 0xFF
                         if k != 255:  # any key pressed
-                            if k == 27:  # ESC - exit application entirely
+                            # Handle keyboard shortcuts for mode switching and selection control
+                            key_handled = manager.handle_key_press(k)
+                            
+                            if key_handled:
+                                # Key was handled by manager, continue loop
+                                continue
+                            elif k == 27:  # ESC - exit application entirely
                                 inspect_exit_flag = True
                                 print("[INFO] ESC pressed - exiting application.")
+                                break
                             else:
                                 print("[INFO] Returning to scan mode.")
-                            break
+                                break
                     
                     # Cleanup interactive mode resources
                     try:

@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+from typing import Dict, List, Optional, Any, Tuple
 from config import (BINARY_BLOCK_SIZE, BINARY_C, MIN_OBJECT_AREA_MM2, PX_PER_MM,
                     CIRCULARITY_CUTOFF, RECT_ANGLE_EPS_DEG, DRAW_FONT, DRAW_THICKNESS)
 from utils import draw_text
@@ -83,7 +84,7 @@ def create_shape_data(measurement_result, contour=None):
     
     return shape_data
 
-def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
+def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automatic"):
     # Compute circularity
     area = cv2.contourArea(cnt)
     if area <= 0:
@@ -106,7 +107,8 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
             "radius_px": radius,
             "hit_contour": hit_contour,
             "area_px": area,
-            "inner": False
+            "inner": False,
+            "detection_method": detection_method
         }
     else:
         # Rectangle-like using minAreaRect
@@ -130,7 +132,8 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y):
             "box": box,
             "hit_contour": hit_contour,
             "area_px": area,
-            "inner": False
+            "inner": False,
+            "detection_method": detection_method
         }
 
 def annotate_result(a4_bgr, result, mm_per_px):
@@ -241,7 +244,8 @@ def detect_inner_circles(a4_bgr, object_mask, object_cnt, mm_per_px_x, min_radiu
         "radius_px": float(r),
         "hit_contour": hit_contour,
         "area_px": area_px,
-        "inner": True
+        "inner": True,
+        "detection_method": "automatic"
     }]
 
 
@@ -297,6 +301,356 @@ def detect_inner_rectangles(a4_bgr, object_mask, object_cnt, mm_per_px_x, mm_per
         "box": box,
         "hit_contour": hit_contour,
         "area_px": area_px,
-        "inner": True
+        "inner": True,
+        "detection_method": "automatic"
     }]
 
+
+# Manual Selection Integration Functions
+
+def classify_and_measure_manual_selection(image: np.ndarray, selection_rect: Tuple[int, int, int, int], 
+                                        shape_result: Dict[str, Any], mm_per_px_x: float, mm_per_px_y: float) -> Optional[Dict[str, Any]]:
+    """
+    Convert a manual shape selection result to the standard measurement format.
+    
+    This function bridges the gap between manual selection results from the shape snapping engine
+    and the standard measurement data format used throughout the application.
+    
+    Args:
+        image: Source image (BGR format)
+        selection_rect: Original selection rectangle as (x, y, width, height)
+        shape_result: Shape result from ShapeSnappingEngine
+        mm_per_px_x: Millimeters per pixel in X direction
+        mm_per_px_y: Millimeters per pixel in Y direction
+        
+    Returns:
+        Measurement result in standard format or None if conversion fails
+    """
+    if shape_result is None or "type" not in shape_result:
+        return None
+    
+    shape_type = shape_result["type"]
+    
+    try:
+        if shape_type == "circle":
+            return _convert_manual_circle_to_measurement(shape_result, mm_per_px_x, selection_rect)
+        elif shape_type == "rectangle":
+            return _convert_manual_rectangle_to_measurement(shape_result, mm_per_px_x, mm_per_px_y, selection_rect)
+        else:
+            return None
+    except Exception as e:
+        print(f"[WARN] Error converting manual selection to measurement: {e}")
+        return None
+
+
+def _convert_manual_circle_to_measurement(shape_result: Dict[str, Any], mm_per_px: float, 
+                                        selection_rect: Tuple[int, int, int, int]) -> Dict[str, Any]:
+    """
+    Convert manual circle selection to standard measurement format.
+    
+    Args:
+        shape_result: Circle result from shape snapping engine
+        mm_per_px: Millimeters per pixel conversion factor
+        selection_rect: Original selection rectangle
+        
+    Returns:
+        Circle measurement in standard format
+    """
+    center = shape_result["center"]
+    radius_px = shape_result.get("radius", shape_result.get("dimensions", [0])[0])
+    
+    # Calculate measurements
+    diameter_px = 2.0 * radius_px
+    diameter_mm = diameter_px * mm_per_px
+    area_px = np.pi * (radius_px ** 2)
+    
+    # Create hit testing contour
+    hit_contour = create_hit_testing_contour('circle', center=center, radius_px=radius_px)
+    
+    return {
+        "type": "circle",
+        "diameter_mm": diameter_mm,
+        "center": center,
+        "radius_px": radius_px,
+        "hit_contour": hit_contour,
+        "area_px": area_px,
+        "inner": False,
+        "detection_method": "manual",
+        "selection_rect": selection_rect,
+        "confidence_score": shape_result.get("confidence_score", 0.0),
+        "manual_mode": shape_result.get("mode", "manual_circle")
+    }
+
+
+def _convert_manual_rectangle_to_measurement(shape_result: Dict[str, Any], mm_per_px_x: float, 
+                                           mm_per_px_y: float, selection_rect: Tuple[int, int, int, int]) -> Dict[str, Any]:
+    """
+    Convert manual rectangle selection to standard measurement format.
+    
+    Args:
+        shape_result: Rectangle result from shape snapping engine
+        mm_per_px_x: Millimeters per pixel in X direction
+        mm_per_px_y: Millimeters per pixel in Y direction
+        selection_rect: Original selection rectangle
+        
+    Returns:
+        Rectangle measurement in standard format
+    """
+    # Get dimensions from shape result
+    if "width" in shape_result and "height" in shape_result:
+        width_px = shape_result["width"]
+        height_px = shape_result["height"]
+    elif "dimensions" in shape_result:
+        width_px, height_px = shape_result["dimensions"]
+    else:
+        # Fallback: calculate from contour
+        contour = shape_result.get("contour")
+        if contour is not None:
+            rect = cv2.minAreaRect(contour)
+            width_px, height_px = rect[1]
+        else:
+            raise ValueError("Cannot determine rectangle dimensions from shape result")
+    
+    # Normalize width < height for consistency
+    width_px = min(width_px, height_px)
+    height_px = max(width_px, height_px)
+    
+    # Convert to millimeters
+    width_mm = width_px * mm_per_px_x
+    height_mm = height_px * mm_per_px_y
+    
+    # Get or create box points
+    if "box" in shape_result:
+        box = shape_result["box"]
+    elif "contour" in shape_result:
+        rect = cv2.minAreaRect(shape_result["contour"])
+        box = cv2.boxPoints(rect).astype(int)
+    else:
+        # Create box from center and dimensions
+        center = shape_result.get("center", (0, 0))
+        cx, cy = center
+        hw, hh = width_px / 2, height_px / 2
+        box = np.array([
+            [cx - hw, cy - hh],
+            [cx + hw, cy - hh],
+            [cx + hw, cy + hh],
+            [cx - hw, cy + hh]
+        ], dtype=int)
+    
+    # Calculate area
+    area_px = cv2.contourArea(box) if len(box) > 2 else width_px * height_px
+    
+    # Create hit testing contour
+    hit_contour = create_hit_testing_contour('rectangle', box=box)
+    
+    return {
+        "type": "rectangle",
+        "width_mm": width_mm,
+        "height_mm": height_mm,
+        "box": box,
+        "hit_contour": hit_contour,
+        "area_px": area_px,
+        "inner": False,
+        "detection_method": "manual",
+        "selection_rect": selection_rect,
+        "confidence_score": shape_result.get("confidence_score", 0.0),
+        "manual_mode": shape_result.get("mode", "manual_rectangle")
+    }
+
+
+def process_manual_selection(image: np.ndarray, selection_rect: Tuple[int, int, int, int], 
+                           mode: str, mm_per_px_x: float, mm_per_px_y: float) -> Optional[Dict[str, Any]]:
+    """
+    Complete workflow for processing a manual selection into a measurement result.
+    
+    This function integrates the manual selection workflow with the existing measurement pipeline:
+    1. Uses enhanced contour analysis on the selected region
+    2. Applies shape snapping to find the best shape
+    3. Converts the result to standard measurement format
+    
+    Args:
+        image: Source image (BGR format)
+        selection_rect: Selection rectangle as (x, y, width, height)
+        mode: Selection mode ("manual_circle" or "manual_rectangle")
+        mm_per_px_x: Millimeters per pixel in X direction
+        mm_per_px_y: Millimeters per pixel in Y direction
+        
+    Returns:
+        Measurement result in standard format or None if processing fails
+    """
+    try:
+        # Import required components
+        from enhanced_contour_analyzer import EnhancedContourAnalyzer
+        from shape_snapping_engine import ShapeSnappingEngine
+        from selection_mode import SelectionMode
+        
+        # Convert mode string to SelectionMode enum
+        if mode == "manual_circle":
+            selection_mode = SelectionMode.MANUAL_CIRCLE
+        elif mode == "manual_rectangle":
+            selection_mode = SelectionMode.MANUAL_RECTANGLE
+        else:
+            print(f"[WARN] Invalid manual selection mode: {mode}")
+            return None
+        
+        # Initialize components
+        analyzer = EnhancedContourAnalyzer()
+        snapping_engine = ShapeSnappingEngine(analyzer)
+        
+        # Perform shape snapping
+        shape_result = snapping_engine.snap_to_shape(image, selection_rect, selection_mode)
+        
+        if shape_result is None:
+            print("[INFO] No suitable shape found in manual selection")
+            return None
+        
+        # Convert to measurement format
+        measurement_result = classify_and_measure_manual_selection(
+            image, selection_rect, shape_result, mm_per_px_x, mm_per_px_y
+        )
+        
+        return measurement_result
+        
+    except ImportError as e:
+        print(f"[ERROR] Required manual selection components not available: {e}")
+        return None
+    except Exception as e:
+        print(f"[ERROR] Error processing manual selection: {e}")
+        return None
+
+
+def validate_manual_measurement_result(result: Dict[str, Any]) -> bool:
+    """
+    Validate that a manual measurement result has all required fields and is consistent.
+    
+    Args:
+        result: Measurement result dictionary
+        
+    Returns:
+        True if result is valid, False otherwise
+    """
+    if result is None:
+        return False
+    
+    # Check required fields
+    required_fields = [
+        "type", "detection_method", "hit_contour", "area_px"
+    ]
+    
+    for field in required_fields:
+        if field not in result:
+            return False
+    
+    # Validate detection method
+    if result["detection_method"] != "manual":
+        return False
+    
+    # Validate shape-specific fields
+    if result["type"] == "circle":
+        circle_fields = ["diameter_mm", "center", "radius_px"]
+        for field in circle_fields:
+            if field not in result:
+                return False
+        
+        # Validate circle measurements
+        if result["diameter_mm"] <= 0 or result["radius_px"] <= 0:
+            return False
+            
+    elif result["type"] == "rectangle":
+        rect_fields = ["width_mm", "height_mm", "box"]
+        for field in rect_fields:
+            if field not in result:
+                return False
+        
+        # Validate rectangle measurements
+        if result["width_mm"] <= 0 or result["height_mm"] <= 0:
+            return False
+            
+    else:
+        return False
+    
+    # Validate hit contour format
+    hit_contour = result["hit_contour"]
+    if not isinstance(hit_contour, np.ndarray):
+        return False
+    
+    if len(hit_contour.shape) != 3 or hit_contour.shape[1] != 1 or hit_contour.shape[2] != 2:
+        return False
+    
+    return True
+
+
+def merge_automatic_and_manual_results(automatic_results: List[Dict[str, Any]], 
+                                     manual_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Merge automatic and manual measurement results into a single list.
+    
+    This function combines results from both detection methods while maintaining
+    proper ordering and avoiding duplicates.
+    
+    Args:
+        automatic_results: List of automatic detection results
+        manual_results: List of manual selection results
+        
+    Returns:
+        Combined list of measurement results with detection_method field
+    """
+    combined_results = []
+    
+    # Add automatic results (ensure they have detection_method field)
+    for result in automatic_results:
+        if result is not None:
+            # Ensure detection_method field is set
+            if "detection_method" not in result:
+                result["detection_method"] = "automatic"
+            combined_results.append(result)
+    
+    # Add manual results (they should already have detection_method = "manual")
+    for result in manual_results:
+        if result is not None and validate_manual_measurement_result(result):
+            combined_results.append(result)
+    
+    return combined_results
+
+
+def get_measurement_summary(results: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Generate a summary of measurement results including detection method statistics.
+    
+    Args:
+        results: List of measurement results
+        
+    Returns:
+        Dictionary with summary statistics
+    """
+    summary = {
+        "total_shapes": len(results),
+        "automatic_count": 0,
+        "manual_count": 0,
+        "circles": 0,
+        "rectangles": 0,
+        "inner_shapes": 0,
+        "detection_methods": {}
+    }
+    
+    for result in results:
+        # Count by detection method
+        method = result.get("detection_method", "unknown")
+        if method == "automatic":
+            summary["automatic_count"] += 1
+        elif method == "manual":
+            summary["manual_count"] += 1
+        
+        summary["detection_methods"][method] = summary["detection_methods"].get(method, 0) + 1
+        
+        # Count by shape type
+        if result["type"] == "circle":
+            summary["circles"] += 1
+        elif result["type"] == "rectangle":
+            summary["rectangles"] += 1
+        
+        # Count inner shapes
+        if result.get("inner", False):
+            summary["inner_shapes"] += 1
+    
+    return summary
