@@ -5,10 +5,6 @@ from utils import order_points, approx_quad, polygon_area
 from config import (CANNY_LOW, CANNY_HIGH, GAUSS_BLUR, ASPECT_MIN, ASPECT_MAX,
                     A4_WIDTH_MM, A4_HEIGHT_MM, PX_PER_MM, MIN_A4_AREA_RATIO, USE_CUDA_IF_AVAILABLE)
 
-# Global high-resolution optimizer instance
-_high_res_optimizer = None
-_gpu_detector = None
-
 def try_cuda():
     try:
         return USE_CUDA_IF_AVAILABLE and hasattr(cv2, 'cuda') and cv2.cuda.getCudaEnabledDeviceCount() > 0
@@ -30,57 +26,7 @@ def preprocess_edges(frame_gray):
         edges = cv2.Canny(blur, CANNY_LOW, CANNY_HIGH)
         return edges
 
-def _initialize_high_res_optimizer():
-    """Initialize the high-resolution optimizer if not already done."""
-    global _high_res_optimizer, _gpu_detector
-    
-    if _high_res_optimizer is None:
-        try:
-            from high_resolution_optimizer import HighResolutionOptimizer, GPUAcceleratedDetection
-            _high_res_optimizer = HighResolutionOptimizer()
-            _gpu_detector = GPUAcceleratedDetection(_high_res_optimizer)
-        except ImportError:
-            print("[WARN] High-resolution optimizer not available, using standard detection")
-            _high_res_optimizer = False  # Mark as unavailable
-            _gpu_detector = False
-
 def find_a4_quad(frame_bgr):
-    """
-    Find A4 quad with automatic high-resolution optimization.
-    
-    Args:
-        frame_bgr: Input BGR frame
-        
-    Returns:
-        Detected A4 quad coordinates or None
-    """
-    h, w = frame_bgr.shape[:2]
-    
-    # Use high-resolution optimization for large frames
-    if w > 2000 or h > 1500:  # Threshold for high-resolution processing
-        _initialize_high_res_optimizer()
-        
-        if _high_res_optimizer and _high_res_optimizer is not False:
-            try:
-                # Use the optimizer to scale down the frame for detection
-                detection_frame, scale_factor = _high_res_optimizer.optimize_frame_for_detection(frame_bgr)
-                
-                # Run standard detection on the scaled frame
-                scaled_quad = _find_a4_quad_standard(detection_frame)
-                
-                # Scale the result back to original resolution
-                if scaled_quad is not None:
-                    result = _high_res_optimizer.scale_detection_result(scaled_quad, scale_factor)
-                    return result
-                
-            except Exception as e:
-                print(f"[WARN] High-resolution optimization failed: {e}")
-    
-    # Standard detection for smaller frames or fallback
-    return _find_a4_quad_standard(frame_bgr)
-
-def _find_a4_quad_standard(frame_bgr):
-    """Standard A4 quad detection (original implementation)."""
     h, w = frame_bgr.shape[:2]
     area_frame = w * h
 
@@ -157,30 +103,3 @@ def a4_scale_mm_per_px():
     mm_per_px_x = 1.0 / PX_PER_MM
     mm_per_px_y = 1.0 / PX_PER_MM
     return mm_per_px_x, mm_per_px_y
-
-def get_detection_performance_stats():
-    """
-    Get performance statistics from the high-resolution optimizer.
-    
-    Returns:
-        Dictionary with performance metrics or None if not available
-    """
-    global _high_res_optimizer
-    
-    if _high_res_optimizer and _high_res_optimizer is not False:
-        return _high_res_optimizer.get_performance_stats()
-    
-    return None
-
-def cleanup_detection_resources():
-    """Clean up detection resources."""
-    global _high_res_optimizer, _gpu_detector
-    
-    if _high_res_optimizer and _high_res_optimizer is not False:
-        try:
-            _high_res_optimizer.cleanup()
-        except Exception as e:
-            print(f"[WARN] Error cleaning up high-resolution optimizer: {e}")
-    
-    _high_res_optimizer = None
-    _gpu_detector = None

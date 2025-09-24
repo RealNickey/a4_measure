@@ -4,7 +4,6 @@ from typing import Dict, List, Optional, Any, Tuple
 from config import (BINARY_BLOCK_SIZE, BINARY_C, MIN_OBJECT_AREA_MM2, PX_PER_MM,
                     CIRCULARITY_CUTOFF, RECT_ANGLE_EPS_DEG, DRAW_FONT, DRAW_THICKNESS)
 from utils import draw_text
-from hit_testing import create_hit_testing_contour
 
 def _area_px2_from_mm2(mm2):
     # Convert mm^2 to px^2 given PX_PER_MM
@@ -98,8 +97,6 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
         (x, y), radius = cv2.minEnclosingCircle(cnt)
         diameter_px = 2.0 * radius
         diameter_mm = diameter_px * mm_per_px_x  # assume isotropic scale
-        center = (int(x), int(y))
-        hit_contour = create_hit_testing_contour('circle', center=center, radius_px=radius)
         return {
             "type": "circle",
             "diameter_mm": diameter_mm,
@@ -122,7 +119,6 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
         width_mm = width_px * mm_per_px_x
         height_mm = height_px * mm_per_px_y
         box = cv2.boxPoints(rect).astype(int)
-        hit_contour = create_hit_testing_contour('rectangle', box=box)
 
         # Optional right-angle sanity (not strictly enforced)
         return {
@@ -232,15 +228,11 @@ def detect_inner_circles(a4_bgr, object_mask, object_cnt, mm_per_px_x, min_radiu
     cx, cy, r = max(circles, key=lambda c: c[2])
     full_cx = int(cx + x)
     full_cy = int(cy + y)
-    center = (full_cx, full_cy)
     diameter_mm = (2.0 * r) * mm_per_px_x
-    hit_contour = create_hit_testing_contour('circle', center=center, radius_px=float(r))
-    area_px = np.pi * (r ** 2)
-    
     return [{
         "type": "circle",
         "diameter_mm": diameter_mm,
-        "center": center,
+        "center": (full_cx, full_cy),
         "radius_px": float(r),
         "hit_contour": hit_contour,
         "area_px": area_px,
@@ -291,9 +283,6 @@ def detect_inner_rectangles(a4_bgr, object_mask, object_cnt, mm_per_px_x, mm_per
     # map box to full image coords
     box[:, 0] += x
     box[:, 1] += y
-    hit_contour = create_hit_testing_contour('rectangle', box=box)
-    area_px = cv2.contourArea(box)
-    
     return [{
         "type": "rectangle",
         "width_mm": float(width_mm),
