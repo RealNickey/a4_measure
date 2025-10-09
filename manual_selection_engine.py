@@ -344,7 +344,7 @@ class ManualSelectionEngine:
     def handle_mouse_event(self, event: int, display_x: int, display_y: int, 
                           flags: int, userdata: Any = None) -> bool:
         """
-        Handle mouse events for manual selection.
+        Handle mouse events for manual selection with optimized responsiveness.
         
         Args:
             event: OpenCV mouse event type
@@ -361,15 +361,17 @@ class ManualSelectionEngine:
             self.start_selection(display_x, display_y)
             return True
             
-        elif event == cv2.EVENT_MOUSEMOVE and (flags & cv2.EVENT_FLAG_LBUTTON):
-            # Update selection during drag
-            self.update_selection(display_x, display_y)
-            return True
+        elif event == cv2.EVENT_MOUSEMOVE:
+            # Always update selection during mouse move if left button is pressed
+            if flags & cv2.EVENT_FLAG_LBUTTON and self.selection_state.is_selecting:
+                self.update_selection(display_x, display_y)
+                return True
             
         elif event == cv2.EVENT_LBUTTONUP:
             # Complete selection
-            final_rect = self.complete_selection()
-            return final_rect is not None
+            if self.selection_state.is_selecting:
+                final_rect = self.complete_selection()
+                return final_rect is not None
             
         elif event == cv2.EVENT_RBUTTONDOWN:
             # Cancel selection on right click

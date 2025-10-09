@@ -73,11 +73,22 @@ class SelectionOverlay:
         if w <= 0 or h <= 0:
             return result
         
-        # Choose color based on active state
-        color = self.selection_color if active else (128, 128, 128)  # Gray for inactive
+        # Use brighter, more visible colors for active selection
+        if active:
+            # Bright cyan for high visibility during dragging
+            color = (255, 255, 0)  # Bright cyan
+            thickness = 3  # Thicker line for better visibility
+        else:
+            color = (128, 128, 128)  # Gray for inactive
+            thickness = self.selection_thickness
         
-        # Draw selection rectangle outline
-        cv2.rectangle(result, (x, y), (x + w, y + h), color, self.selection_thickness)
+        # Draw selection rectangle outline with enhanced visibility
+        cv2.rectangle(result, (x, y), (x + w, y + h), color, thickness)
+        
+        # Add contrasting inner outline for better visibility
+        if active:
+            inner_color = (0, 0, 0)  # Black inner outline
+            cv2.rectangle(result, (x + 1, y + 1), (x + w - 1, y + h - 1), inner_color, 1)
         
         # Add semi-transparent overlay for active selections
         if active and self.selection_alpha > 0:
@@ -88,7 +99,7 @@ class SelectionOverlay:
         # Add corner markers for better visibility
         self._draw_corner_markers(result, x, y, w, h, color)
         
-        # Add selection info text
+        # Add selection info text with better visibility
         if active:
             info_text = f"{w}x{h}"
             self._draw_selection_info(result, x, y, w, h, info_text, color)

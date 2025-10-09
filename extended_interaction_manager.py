@@ -94,13 +94,15 @@ class ExtendedInteractionManager(InteractionManager):
             True if the key was handled and requires re-rendering
         """
         if key == self.key_mode_cycle:
-            # Cycle to next mode
+            # Cycle to next mode with optimized switching
             old_mode = self.mode_manager.get_current_mode()
-            new_mode = self.mode_manager.cycle_mode()
             
-            # Cancel any active manual selection when switching modes
+            # Cancel any active manual selection before switching
             if self.manual_engine.is_selecting():
                 self.manual_engine.cancel_selection()
+            
+            # Switch mode
+            new_mode = self.mode_manager.cycle_mode()
             
             # Clear any previous manual results when switching to auto mode
             if new_mode == SelectionMode.AUTO:
@@ -108,6 +110,14 @@ class ExtendedInteractionManager(InteractionManager):
                 self.show_shape_confirmation = False
             
             print(f"[INFO] Mode switched from {old_mode.value} to {new_mode.value}")
+            
+            # Force immediate re-render for responsive mode switching
+            if hasattr(self, 'window_name'):
+                display_image = self.render_with_manual_overlays()
+                if display_image is not None:
+                    cv2.imshow(self.window_name, display_image)
+                    cv2.waitKey(1)  # Force immediate display update
+            
             return True
             
         elif key == self.key_cancel_selection:
@@ -163,7 +173,7 @@ class ExtendedInteractionManager(InteractionManager):
     
     def render_with_manual_overlays(self) -> Optional[np.ndarray]:
         """
-        Render the current state with manual selection overlays.
+        Render the current state with manual selection overlays with performance optimization.
         
         Returns:
             Rendered image with manual overlays or None if rendering skipped
@@ -175,28 +185,33 @@ class ExtendedInteractionManager(InteractionManager):
         
         result = base_image.copy()
         
-        # Render mode indicator
+        # Render mode indicator (always visible)
         mode_text = self.mode_manager.get_mode_indicator()
         result = self.selection_overlay.render_mode_indicator(result, mode_text)
         
         # Render manual selection overlays if in manual mode
         if self.mode_manager.is_manual_mode():
-            # Render active selection rectangle
+            # Render active selection rectangle with high priority for responsiveness
             selection_rect = self.manual_engine.get_display_selection_rect()
             if selection_rect is not None:
-                result = self.selection_overlay.render_selection_rectangle(result, selection_rect)
+                result = self.selection_overlay.render_selection_rectangle(result, selection_rect, active=True)
             
-            # Render shape confirmation if available
+            # Render shape confirmation if available (lower priority)
             if self.show_shape_confirmation and self.last_manual_result is not None:
-                # Transform shape result to display coordinates for rendering
-                display_result = self._transform_shape_result_to_display(self.last_manual_result)
-                result = self.selection_overlay.render_shape_confirmation(result, display_result)
-                
-                # Update confirmation timer
-                self.confirmation_timer += 1
-                if self.confirmation_timer >= self.confirmation_duration:
+                try:
+                    # Transform shape result to display coordinates for rendering
+                    display_result = self._transform_shape_result_to_display(self.last_manual_result)
+                    result = self.selection_overlay.render_shape_confirmation(result, display_result)
+                    
+                    # Update confirmation timer
+                    self.confirmation_timer += 1
+                    if self.confirmation_timer >= self.confirmation_duration:
+                        self.show_shape_confirmation = False
+                        self.confirmation_timer = 0
+                except Exception as e:
+                    # Don't let confirmation rendering errors break the main rendering
+                    print(f"[WARN] Shape confirmation rendering error: {e}")
                     self.show_shape_confirmation = False
-                    self.confirmation_timer = 0
         
         return result
     
@@ -232,11 +247,12 @@ class ExtendedInteractionManager(InteractionManager):
             elif event == cv2.EVENT_LBUTTONDOWN:
                 needs_render = self.handle_mouse_click(x, y)
         
-        # Re-render if needed
+        # Re-render immediately for better responsiveness
         if needs_render and hasattr(self, 'window_name'):
             display_image = self.render_with_manual_overlays()
             if display_image is not None:
                 cv2.imshow(self.window_name, display_image)
+                cv2.waitKey(1)  # Force immediate display update
     
     def setup_window(self, window_name: str) -> None:
         """
