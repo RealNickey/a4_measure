@@ -3,16 +3,56 @@ import numpy as np
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from config import (BINARY_BLOCK_SIZE, BINARY_C, MIN_OBJECT_AREA_MM2, PX_PER_MM,
-                    CIRCULARITY_CUTOFF, RECT_ANGLE_EPS_DEG, DRAW_FONT, DRAW_THICKNESS)
+                    CIRCULARITY_CUTOFF, RECT_ANGLE_EPS_DEG, DRAW_FONT, DRAW_THICKNESS,
+                    ENABLE_ADAPTIVE_THRESHOLD, ADAPTIVE_THRESHOLD_ENABLE_CLAHE,
+                    ADAPTIVE_THRESHOLD_ENABLE_MULTIPASS, ADAPTIVE_THRESHOLD_ENABLE_LOCAL)
 from utils import draw_text
 
 def _area_px2_from_mm2(mm2):
     # Convert mm^2 to px^2 given PX_PER_MM
     return (mm2 * (PX_PER_MM ** 2))
 
+# Global adaptive threshold calibrator instance (lazy initialization)
+_adaptive_calibrator = None
+
+def _get_adaptive_calibrator():
+    """Get or create the adaptive threshold calibrator instance."""
+    global _adaptive_calibrator
+    if _adaptive_calibrator is None:
+        try:
+            from adaptive_threshold_calibrator import AdaptiveThresholdCalibrator
+            _adaptive_calibrator = AdaptiveThresholdCalibrator(
+                initial_block_size=BINARY_BLOCK_SIZE,
+                initial_c=BINARY_C,
+                enable_clahe=ADAPTIVE_THRESHOLD_ENABLE_CLAHE,
+                enable_multipass=ADAPTIVE_THRESHOLD_ENABLE_MULTIPASS,
+                enable_local_adaptive=ADAPTIVE_THRESHOLD_ENABLE_LOCAL
+            )
+            logging.info("Adaptive threshold calibrator initialized")
+        except Exception as e:
+            logging.warning(f"Failed to initialize adaptive calibrator: {e}")
+            _adaptive_calibrator = None
+    return _adaptive_calibrator
+
 def segment_object(a4_bgr):
     # Expect a light background (paper). Use adaptive threshold to get dark object(s).
     gray = cv2.cvtColor(a4_bgr, cv2.COLOR_BGR2GRAY)
+    
+    # Use adaptive threshold calibration if enabled
+    if ENABLE_ADAPTIVE_THRESHOLD:
+        calibrator = _get_adaptive_calibrator()
+        if calibrator is not None:
+            try:
+                bw, stats = calibrator.calibrate_and_threshold(gray)
+                logging.debug(f"Adaptive threshold: block_size={stats['block_size']}, "
+                            f"c={stats['c_constant']:.1f}, "
+                            f"lighting={stats['lighting_stats']['lighting_condition']}")
+                return bw
+            except Exception as e:
+                logging.warning(f"Adaptive threshold failed, falling back to standard: {e}")
+                # Fall through to standard method
+    
+    # Standard adaptive threshold (fallback or if adaptive is disabled)
     bw = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                cv2.THRESH_BINARY_INV, BINARY_BLOCK_SIZE, BINARY_C)
     # Morph cleanup

@@ -69,3 +69,11 @@ MAX_SELECTION_RETRIES = 3  # Maximum number of selection retry attempts
 FALLBACK_TO_STANDARD_THRESHOLD = True  # Enable fallback to standard thresholding
 ERROR_MESSAGE_DISPLAY_TIME_MS = 3000  # Duration to display error messages in milliseconds
 ENABLE_SELECTION_VALIDATION = True  # Enable comprehensive selection validation
+
+# Adaptive Threshold Calibration parameters
+ENABLE_ADAPTIVE_THRESHOLD = True  # Enable intelligent adaptive threshold calibration
+ADAPTIVE_THRESHOLD_ENABLE_CLAHE = True  # Enable CLAHE contrast enhancement
+ADAPTIVE_THRESHOLD_ENABLE_MULTIPASS = True  # Enable multi-pass threshold refinement
+ADAPTIVE_THRESHOLD_ENABLE_LOCAL = True  # Enable local adaptive thresholding
+ADAPTIVE_THRESHOLD_CLAHE_CLIP_LIMIT = 2.0  # CLAHE clip limit for contrast enhancement
+ADAPTIVE_THRESHOLD_CLAHE_TILE_SIZE = 8  # CLAHE tile grid size
