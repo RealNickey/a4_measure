@@ -59,5 +59,14 @@ a4_measure/
 - After finding the A4, we **warp** the sheet to its true aspect (210×297 mm) at a fixed pixel density (`PX_PER_MM`), so physical size per pixel is known by construction.
 - Measurements use contour analysis, minAreaRect for rectangles, and circle fit for round objects.
 
+### Detection Accuracy Improvements
+- **Sub-pixel corner refinement**: Achieves 0.1 pixel accuracy using OpenCV's `cornerSubPix`
+- **Perspective quality scoring**: Real-time feedback on detection quality (0-100%)
+- **Multi-frame calibration**: Averages multiple frames to reduce noise and jitter
+- **Measurement confidence**: Each measurement includes a confidence score
+- **Quality warnings**: Visual indicators when detection quality is low
+
+See [DETECTION_IMPROVEMENTS.md](DETECTION_IMPROVEMENTS.md) for detailed documentation.
+
 ## License
 MIT
