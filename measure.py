@@ -128,6 +128,70 @@ def create_shape_data(measurement_result, contour=None):
     
     return shape_data
 
+def calculate_shape_confidence(cnt, circularity, shape_type):
+    """
+    Calculate confidence score for shape detection.
+    
+    Confidence is based on:
+    - How well the shape matches the expected type (circularity for circles)
+    - Contour smoothness (fewer vertices relative to perimeter)
+    - Size consistency
+    
+    Args:
+        cnt: Contour points
+        circularity: Circularity value (0 to 1)
+        shape_type: 'circle' or 'rectangle'
+        
+    Returns:
+        Confidence score from 0.0 to 1.0
+    """
+    # Shape match quality
+    if shape_type == "circle":
+        # For circles, circularity should be close to 1.0
+        shape_match = circularity
+    else:
+        # For rectangles, circularity should be lower
+        # Ideal rectangularity is around 0.6-0.8
+        if circularity < CIRCULARITY_CUTOFF:
+            # Map circularity to rectangularity confidence
+            shape_match = min(1.0, (CIRCULARITY_CUTOFF - circularity) / (CIRCULARITY_CUTOFF - 0.5))
+        else:
+            shape_match = 0.5
+    
+    # Contour smoothness (approximation quality)
+    peri = cv2.arcLength(cnt, True)
+    approx = cv2.approxPolyDP(cnt, 0.02 * peri, True)
+    
+    if shape_type == "circle":
+        # Circles should have many points (smooth contour)
+        expected_points = max(20, int(peri / 10))
+        point_ratio = len(cnt) / max(expected_points, 1)
+        smoothness = min(1.0, point_ratio)
+    else:
+        # Rectangles should approximate to 4 points
+        point_diff = abs(len(approx) - 4)
+        smoothness = max(0.0, 1.0 - point_diff / 4.0)
+    
+    # Area consistency (check if area matches expected shape area)
+    area = cv2.contourArea(cnt)
+    if shape_type == "circle":
+        (x, y), radius = cv2.minEnclosingCircle(cnt)
+        expected_area = np.pi * radius * radius
+    else:
+        rect = cv2.minAreaRect(cnt)
+        (wpx, hpx) = rect[1]
+        expected_area = wpx * hpx
+    
+    area_ratio = area / max(expected_area, 1.0)
+    area_consistency = 1.0 - abs(1.0 - area_ratio)
+    area_consistency = max(0.0, min(1.0, area_consistency))
+    
+    # Combined confidence with weights
+    confidence = (shape_match * 0.5 + smoothness * 0.25 + area_consistency * 0.25)
+    
+    return max(0.0, min(1.0, confidence))
+
+
 def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automatic"):
     # Compute circularity
     area = cv2.contourArea(cnt)
@@ -149,6 +213,9 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
         # Round to nearest millimeter for consistent precision (Requirement 1.5, 5.4)
         diameter_mm = round(diameter_mm_raw)
         
+        # Calculate confidence score
+        confidence = calculate_shape_confidence(cnt, circularity, "circle")
+        
         # Create circular hit contour for better hit testing
         angles = np.linspace(0, 2*np.pi, 36, endpoint=False)
         circle_points = np.array([(int(center[0] + radius * np.cos(a)),
@@ -163,7 +230,8 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
             "hit_contour": hit_contour,
             "area_px": area,
             "inner": False,
-            "detection_method": detection_method
+            "detection_method": detection_method,
+            "confidence_score": confidence
         }
     else:
         # Rectangle-like using minAreaRect
@@ -181,6 +249,9 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
         height_mm = round(height_mm_raw)
         box = cv2.boxPoints(rect).astype(int)
         
+        # Calculate confidence score
+        confidence = calculate_shape_confidence(cnt, circularity, "rectangle")
+        
         # Use the box points as hit contour for rectangles
         hit_contour = box.reshape(-1, 1, 2).astype(np.int32)
 
@@ -193,14 +264,27 @@ def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automa
             "hit_contour": hit_contour,
             "area_px": area,
             "inner": False,
-            "detection_method": detection_method
+            "detection_method": detection_method,
+            "confidence_score": confidence
         }
 
 def annotate_result(a4_bgr, result, mm_per_px):
     # Backward-compatible single-result annotation
     return annotate_results(a4_bgr, [result], mm_per_px)
 
-def annotate_results(a4_bgr, results, mm_per_px):
+def annotate_results(a4_bgr, results, mm_per_px, show_confidence=True):
+    """
+    Annotate measurement results on the image.
+    
+    Args:
+        a4_bgr: Input image
+        results: List of measurement results
+        mm_per_px: Millimeters per pixel scale
+        show_confidence: Whether to display confidence scores
+        
+    Returns:
+        Annotated image
+    """
     out = a4_bgr.copy()
     # Color palette for multiple objects
     colors = [
@@ -215,6 +299,10 @@ def annotate_results(a4_bgr, results, mm_per_px):
             color = (0, 0, 255)  # Red for inner shapes
         else:
             color = colors[idx % len(colors)]
+        
+        # Get confidence score if available
+        confidence = res.get("confidence_score", None)
+        
         if res["type"] == "circle":
             center = res["center"]
             radius_px = int(res["radius_px"])
@@ -224,8 +312,12 @@ def annotate_results(a4_bgr, results, mm_per_px):
             x1 = center[0] + radius_px
             y = center[1]
             cv2.line(out, (x0, y), (x1, y), color, 2)
+            
             # Dimension text centered inside the circle
             text_inside = f"D={res['diameter_mm']:.0f}mm"
+            if show_confidence and confidence is not None:
+                text_inside += f" ({confidence:.0%})"
+            
             ts = cv2.getTextSize(text_inside, DRAW_FONT, 0.9, 2)[0]
             text_org = (int(center[0] - ts[0] / 2), int(center[1] + ts[1] / 2))
             cv2.rectangle(out,
@@ -245,10 +337,14 @@ def annotate_results(a4_bgr, results, mm_per_px):
             mid_bottom = ((box[2] + box[3]) / 2).astype(int)
             cv2.arrowedLine(out, tuple(mid_top), tuple(mid_bottom), color, 2, tipLength=0.02)
             cv2.arrowedLine(out, tuple(mid_bottom), tuple(mid_top), color, 2, tipLength=0.02)
+            
             # Dimension text centered inside the rectangle
             cx = int(np.mean(box[:, 0]))
             cy = int(np.mean(box[:, 1]))
             text_inside = f"W={res['width_mm']:.0f}mm  H={res['height_mm']:.0f}mm"
+            if show_confidence and confidence is not None:
+                text_inside += f" ({confidence:.0%})"
+            
             ts = cv2.getTextSize(text_inside, DRAW_FONT, 0.9, 2)[0]
             text_org = (int(cx - ts[0] / 2), int(cy + ts[1] / 2))
             cv2.rectangle(out,

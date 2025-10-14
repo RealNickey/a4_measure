@@ -69,3 +69,9 @@ MAX_SELECTION_RETRIES = 3  # Maximum number of selection retry attempts
 FALLBACK_TO_STANDARD_THRESHOLD = True  # Enable fallback to standard thresholding
 ERROR_MESSAGE_DISPLAY_TIME_MS = 3000  # Duration to display error messages in milliseconds
 ENABLE_SELECTION_VALIDATION = True  # Enable comprehensive selection validation
+
+# Detection accuracy improvements
+ENABLE_SUBPIXEL_REFINEMENT = True  # Enable sub-pixel corner refinement for A4 detection
+MIN_DETECTION_QUALITY = 0.6  # Minimum quality score for A4 detection (0.0-1.0)
+MULTI_FRAME_CALIBRATION_SAMPLES = 5  # Number of frames to sample for multi-frame calibration
+CALIBRATION_QUALITY_THRESHOLD = 0.7  # Quality threshold for accepting calibration frames

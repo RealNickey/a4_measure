@@ -2,10 +2,10 @@
 import cv2
 import numpy as np
 from camera import open_capture
-from detection import find_a4_quad, warp_a4, a4_scale_mm_per_px
+from detection import find_a4_quad, find_a4_quad_with_quality, warp_a4, a4_scale_mm_per_px
 from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result, detect_inner_circles, detect_inner_rectangles, process_manual_selection
 from utils import draw_text
-from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS, DRAW_FONT
+from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS, DRAW_FONT, ENABLE_SUBPIXEL_REFINEMENT, MIN_DETECTION_QUALITY
 
 def corners_stable(prev, curr, tol):
     if prev is None or curr is None:
@@ -26,6 +26,7 @@ def main():
     stable_count = 0
     last_quad = None
     pause_for_processing = False
+    detection_quality = 0.0
 
     while True:
         ok, frame = cap.read()
@@ -35,7 +36,8 @@ def main():
 
         display = frame.copy()
 
-        quad = find_a4_quad(frame)
+        # Use improved detection with quality scoring
+        quad, detection_quality = find_a4_quad_with_quality(frame, enable_subpixel=ENABLE_SUBPIXEL_REFINEMENT)
         if quad is not None:
             # draw quad on display
             for i in range(4):
@@ -55,7 +57,20 @@ def main():
         if quad is None:
             draw_text(display, "Show a full A4 sheet in view...", (20, 40), (0,0,255), 0.8, 2)
         else:
-            draw_text(display, f"A4 detected. Stabilizing... ({stable_count}/{STABLE_FRAMES})", (20, 40), (0,255,0), 0.8, 2)
+            # Show quality indicator with color based on quality
+            quality_text = f"A4 detected (Q: {detection_quality:.0%}). Stabilizing... ({stable_count}/{STABLE_FRAMES})"
+            if detection_quality < MIN_DETECTION_QUALITY:
+                quality_color = (0, 165, 255)  # Orange for low quality
+            elif detection_quality < 0.8:
+                quality_color = (0, 255, 255)  # Yellow for medium quality
+            else:
+                quality_color = (0, 255, 0)  # Green for high quality
+            draw_text(display, quality_text, (20, 40), quality_color, 0.8, 2)
+            
+            # Show warning if quality is low
+            if detection_quality < MIN_DETECTION_QUALITY:
+                draw_text(display, "Warning: Low detection quality. Adjust position/lighting.", 
+                         (20, 70), (0, 0, 255), 0.6, 2)
 
         cv2.imshow("Scan", display)
         if cv2.waitKey(1) & 0xFF == 27:  # ESC to quit anytime
@@ -70,6 +85,12 @@ def main():
             # Stop/flush the video to free resources during processing for consistency
             cap.release()
 
+            # Report detection quality
+            print(f"\n[INFO] A4 Detection Quality: {detection_quality:.1%}")
+            if detection_quality < MIN_DETECTION_QUALITY:
+                print(f"[WARN] Detection quality is below threshold ({MIN_DETECTION_QUALITY:.0%})")
+                print("[WARN] Results may be less accurate. Consider adjusting camera position or lighting.")
+            
             warped, _ = warp_a4(frame2, quad)
             mm_per_px_x, mm_per_px_y = a4_scale_mm_per_px()
             mask = segment_object(warped)
@@ -545,10 +566,13 @@ def main():
                 # Print detected shapes summary
                 print(f"\n[INFO] Detected {len(shapes)} shape(s):")
                 for i, sh in enumerate(shapes):
+                    confidence_str = ""
+                    if "confidence_score" in results[i]:
+                        confidence_str = f" (confidence: {results[i]['confidence_score']:.0%})"
                     if sh["type"] == "circle":
-                        print(f"  {i+1}. Circle - Diameter: {sh['diameter_mm']:.1f} mm")
+                        print(f"  {i+1}. Circle - Diameter: {sh['diameter_mm']:.1f} mm{confidence_str}")
                     else:
-                        print(f"  {i+1}. Rectangle - {sh['width_mm']:.1f} x {sh['height_mm']:.1f} mm")
+                        print(f"  {i+1}. Rectangle - {sh['width_mm']:.1f} x {sh['height_mm']:.1f} mm{confidence_str}")
 
                 print(f"\n[ENHANCED INSPECT MODE] Current mode: {current_mode}")
                 print("Controls:")
