@@ -146,6 +146,7 @@ class AdaptiveThresholdCalibrator:
             Tuple of (block_size, c_constant)
         """
         mean_brightness = lighting_stats['mean_brightness']
+        std_brightness = lighting_stats['std_brightness']
         contrast_ratio = lighting_stats['contrast_ratio']
         lighting_condition = lighting_stats['lighting_condition']
         dynamic_range = lighting_stats['dynamic_range']
@@ -161,19 +162,30 @@ class AdaptiveThresholdCalibrator:
         elif contrast_ratio < 0.2:  # Low local contrast
             block_size = min(51, self.initial_block_size + 10)
         
-        # Adjust C constant based on lighting condition
-        if lighting_condition == "underexposed":
-            # Reduce C to be more sensitive in dark images
-            c_constant = max(2.0, self.initial_c - 3.0)
-        elif lighting_condition == "overexposed":
-            # Increase C to reduce noise in bright images
-            c_constant = min(12.0, self.initial_c + 3.0)
-        else:
-            # Fine-tune based on dynamic range
-            if dynamic_range < 50:  # Low dynamic range
+        # Adjust C constant based on lighting condition AND dynamic range
+        # If dynamic range is very low, be more conservative with C adjustment
+        if dynamic_range < 50:  # Low dynamic range - use standard deviation instead
+            # For low dynamic range images, adjust based on std
+            if std_brightness < 30:  # Very uniform
                 c_constant = max(3.0, self.initial_c - 2.0)
-            elif dynamic_range > 150:  # High dynamic range
-                c_constant = min(10.0, self.initial_c + 2.0)
+            else:  # Some variation
+                c_constant = self.initial_c
+        else:
+            # Normal dynamic range - use lighting condition
+            if lighting_condition == "underexposed":
+                # Reduce C to be more sensitive in dark images
+                c_constant = max(2.0, self.initial_c - 3.0)
+            elif lighting_condition == "overexposed":
+                # For overexposed, only increase C if std is also low
+                if std_brightness < 40:
+                    c_constant = min(12.0, self.initial_c + 3.0)
+                else:
+                    # There's variation in the bright image, keep default
+                    c_constant = self.initial_c
+            else:
+                # Normal lighting - use dynamic range for fine-tuning
+                if dynamic_range > 150:  # High dynamic range
+                    c_constant = min(10.0, self.initial_c + 2.0)
         
         # Ensure block size is odd
         if block_size % 2 == 0:
@@ -197,10 +209,17 @@ class AdaptiveThresholdCalibrator:
         if not self.enable_clahe:
             return gray
         
-        # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
-        enhanced = self.clahe.apply(gray)
+        # Check if CLAHE would be beneficial
+        # Only apply if the image has low contrast
+        std = np.std(gray)
         
-        return enhanced
+        if std < 30:  # Low contrast, CLAHE would help
+            # Apply CLAHE (Contrast Limited Adaptive Histogram Equalization)
+            enhanced = self.clahe.apply(gray)
+            return enhanced
+        
+        # Good contrast already, return as-is
+        return gray
     
     def apply_local_adaptive_threshold(self, gray: np.ndarray, 
                                       block_size: int, 
@@ -349,8 +368,11 @@ class AdaptiveThresholdCalibrator:
         binary = self.refine_with_multipass(enhanced, binary, block_size, c_constant)
         
         # Step 6: Noise reduction
-        # Determine aggressiveness based on lighting condition
-        aggressive = lighting_stats['lighting_condition'] in ['underexposed', 'overexposed']
+        # Only use aggressive noise reduction for very low SNR scenarios
+        # Check if there's actually a lot of noise
+        edges = cv2.Canny(enhanced, 50, 150)
+        edge_density = np.sum(edges > 0) / (edges.shape[0] * edges.shape[1])
+        aggressive = edge_density > 0.15  # High edge density suggests noise
         binary = self.reduce_noise(binary, aggressive=aggressive)
         
         # Store calibration stats
