@@ -48,3 +48,7 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Demo comparison images (keep individual demos for docs)
+demo_a4_detection_comparison.png
+create_demo_comparison.py
