@@ -1,11 +1,21 @@
+import argparse
+from typing import Any, Dict, List
 
 import cv2
 import numpy as np
 from camera import open_capture
 from detection import find_a4_quad, warp_a4, a4_scale_mm_per_px
-from measure import segment_object, largest_inner_contour, all_inner_contours, classify_and_measure, annotate_results, annotate_result, detect_inner_circles, detect_inner_rectangles, process_manual_selection
+from extended_interaction_manager import setup_extended_interactive_inspect_mode
+from measure import (
+    segment_object,
+    all_inner_contours,
+    classify_and_measure,
+    detect_inner_circles,
+    detect_inner_rectangles,
+    process_manual_selection,
+)
 from utils import draw_text
-from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS, DRAW_FONT
+from config import STABLE_FRAMES, MAX_CORNER_JITTER, DRAW_THICKNESS, DRAW_FONT, PX_PER_MM, MIN_OBJECT_AREA_MM2
 
 def corners_stable(prev, curr, tol):
     if prev is None or curr is None:
@@ -13,9 +23,141 @@ def corners_stable(prev, curr, tol):
     d = np.linalg.norm(prev - curr, axis=1).mean()
     return d <= tol
 
-def main():
-    print("=== A4 Object Dimension Scanner ===")
-    ip_base = input("Enter IP camera base URL (e.g. http://192.168.1.7:8080) or leave empty to use webcam: ").strip()
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="A4 object measurement scanner")
+    parser.add_argument(
+        "--photo",
+        type=str,
+        help="Path to a still photo to process instead of using the live camera",
+    )
+    parser.add_argument(
+        "--camera-url",
+        dest="camera_url",
+        type=str,
+        default=None,
+        help="Optional IP camera base URL (e.g. http://192.168.1.7:8080)",
+    )
+    return parser.parse_args()
+
+
+def detect_shapes_in_warped(
+    warped: np.ndarray, mm_per_px_x: float, mm_per_px_y: float
+) -> List[Dict[str, Any]]:
+    mask = segment_object(warped)
+    cnts = all_inner_contours(mask)
+    results: list[dict[str, object]] = []
+    if cnts:
+        min_area_px = MIN_OBJECT_AREA_MM2 * (PX_PER_MM ** 2)
+        for cnt in cnts:
+            if cv2.contourArea(cnt) < min_area_px:
+                continue
+            measurement = classify_and_measure(
+                cnt, mm_per_px_x, mm_per_px_y, "automatic"
+            )
+            if measurement is not None:
+                results.append(measurement)
+            inner_circles = detect_inner_circles(warped, mask, cnt, mm_per_px_x)
+            if inner_circles:
+                results.extend(inner_circles)
+            inner_rects = detect_inner_rectangles(
+                warped, mask, cnt, mm_per_px_x, mm_per_px_y
+            )
+            if inner_rects:
+                results.extend(inner_rects)
+    return results
+
+def run_photo_mode(photo_path: str) -> None:
+    frame = cv2.imread(photo_path)
+    if frame is None:
+        raise SystemExit(f"Failed to load photo '{photo_path}'.")
+
+    quad = find_a4_quad(frame)
+    if quad is None:
+        raise SystemExit("Could not detect an A4 sheet in the provided photo.")
+
+    warped, _ = warp_a4(frame, quad)
+    mm_per_px_x, mm_per_px_y = a4_scale_mm_per_px()
+    results = detect_shapes_in_warped(warped, mm_per_px_x, mm_per_px_y)
+
+    window_name = "Inspect Mode"
+
+    if not results:
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        base = warped.copy()
+        draw_text(base, "No valid object detected.", (20, 40), (0, 0, 255), 0.9, 2)
+        display_height = 800
+        scale = display_height / base.shape[0]
+        display_width = int(base.shape[1] * scale)
+        cv2.resizeWindow(window_name, display_width, display_height)
+        disp = cv2.resize(base, (display_width, display_height))
+        cv2.imshow(window_name, disp)
+        cv2.waitKey(0)
+        cv2.destroyWindow(window_name)
+        return
+
+    shapes: List[Dict[str, Any]] = []
+    for r in results:
+        entry: dict[str, object] = {
+            "type": r["type"],
+            "inner": r.get("inner", False),
+        }
+        if r["type"] == "rectangle":
+            box = np.array(r["box"], dtype=np.int32)
+            entry["box"] = box
+            entry["width_mm"] = float(r["width_mm"])
+            entry["height_mm"] = float(r["height_mm"])
+            entry["area_px"] = float(cv2.contourArea(box))
+            entry["hit_cnt"] = box.reshape(-1, 1, 2).astype(np.int32)
+        else:
+            center = (int(r["center"][0]), int(r["center"][1]))
+            radius_px = int(round(r["radius_px"]))
+            entry["center"] = center
+            entry["radius_px"] = radius_px
+            entry["diameter_mm"] = float(r["diameter_mm"])
+            entry["area_px"] = float(np.pi * (radius_px ** 2))
+            angles = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+            poly = np.array(
+                [
+                    (
+                        int(center[0] + radius_px * np.cos(a)),
+                        int(center[1] + radius_px * np.sin(a)),
+                    )
+                    for a in angles
+                ]
+            )
+            entry["hit_cnt"] = poly.reshape(-1, 1, 2).astype(np.int32)
+        shapes.append(entry)
+
+    manager = setup_extended_interactive_inspect_mode(
+        shapes=shapes,
+        warped_image=warped,
+        window_name=window_name,
+        enable_performance_optimization=True,
+    )
+
+    print("\n[PHOTO MODE] Controls:")
+    print("• Hover to preview shapes in AUTO mode")
+    print("• Press 'M' to cycle AUTO → MANUAL_RECT → MANUAL_CIRCLE")
+    print("• Drag to analyze a region in manual modes")
+    print("• Press 'C' to toggle manual confirmation, ESC to exit")
+
+    try:
+        while True:
+            key = cv2.waitKey(20) & 0xFF
+            if key == 255:
+                continue
+            if key == 27:  # ESC
+                break
+            if manager.handle_key_press(key):
+                continue
+        manager.cleanup()
+    finally:
+        cv2.destroyWindow(window_name)
+
+
+def run_live_mode(camera_url: str | None) -> None:
+    ip_base = camera_url or ""
     cap, tried_ip = open_capture(ip_base if ip_base else None)
     print("[INFO] Video source:", "IP Camera" if tried_ip else "Webcam")
 
@@ -597,6 +739,14 @@ def main():
     except Exception:
         pass
     cv2.destroyAllWindows()
+
+def main() -> None:
+    args = parse_args()
+    if args.photo:
+        run_photo_mode(args.photo)
+    else:
+        run_live_mode(args.camera_url)
+
 
 if __name__ == "__main__":
     main()
