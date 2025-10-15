@@ -8,6 +8,7 @@ Measure the dimensions of simple objects (rectangles and circles) placed on an A
 - Automatically stops the live stream once both A4 and an object are stably detected, then processes a single **good frame** for precise measurements.
 - Supports **rectangles** and **circles** (diameter/width/height in millimeters).
 - Robust perspective correction and mm-per-pixel accuracy using A4 true dimensions.
+- **Adaptive Threshold Calibration**: Intelligent system that dynamically adjusts detection parameters based on lighting conditions for improved accuracy.
 - Fast path with optional **GPU acceleration** if OpenCV CUDA is available.
 - Keyboard workflow: After showing results, **press any key** to resume scanning.
 
@@ -34,9 +35,10 @@ python main.py
 4. Press **any key** in the window to continue scanning again.
 
 ### Notes & Tips
-- Good lighting and clear contrast between the object and the A4 background improve accuracy.
-- The object must lie flat on the sheet.
+- The system automatically adapts to different lighting conditions using adaptive threshold calibration.
+- For best results, ensure the object lies flat on the sheet.
 - If your IP cam uses a different path than `/video`, type the full stream URL when prompted.
+- See [ADAPTIVE_THRESHOLD_CALIBRATION.md](ADAPTIVE_THRESHOLD_CALIBRATION.md) for detailed documentation on the adaptive threshold system.
 
 ## Output
 - On-screen annotated image with dimensions (mm).

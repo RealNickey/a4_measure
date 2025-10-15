@@ -48,3 +48,9 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# Demo output files
+demo_adaptive_*.png
+adaptive_threshold_*.png
+create_summary_visualization.py
+create_architecture_diagram.py
