@@ -22,6 +22,13 @@ ASPECT_MAX = 1.60
 # Minimum area (portion of frame) for a valid A4 candidate
 MIN_A4_AREA_RATIO = 0.08
 
+# Enhanced A4 detection parameters
+A4_CORNER_ANGLE_TOLERANCE = 25.0  # degrees tolerance for 90° corners
+A4_MIN_CORNER_ANGLE = 65.0  # minimum acceptable corner angle (degrees)
+A4_MAX_CORNER_ANGLE = 115.0  # maximum acceptable corner angle (degrees)
+A4_PERSPECTIVE_MAX_RATIO = 2.5  # maximum ratio between parallel sides (perspective distortion limit)
+A4_CONTOUR_COMPLEXITY_MAX = 0.15  # maximum complexity ratio (child contours / parent area)
+
 # Stability: require this many consecutive frames with similar A4 corners + object presence
 STABLE_FRAMES = 6
 MAX_CORNER_JITTER = 12.0  # pixels allowed movement between frames for the A4 corners
@@ -30,6 +37,7 @@ MAX_CORNER_JITTER = 12.0  # pixels allowed movement between frames for the A4 co
 BINARY_BLOCK_SIZE = 31  # for adaptive threshold; must be odd
 BINARY_C = 7            # for adaptive threshold
 MIN_OBJECT_AREA_MM2 = 300.0  # ignore tiny specks (in mm^2 after warp -> converted to px^2 inside code)
+ENABLE_ADAPTIVE_THRESHOLD = True
 
 # Shape classification
 CIRCULARITY_CUTOFF = 0.80  # > => circle-like
