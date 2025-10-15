@@ -37,6 +37,7 @@ MAX_CORNER_JITTER = 12.0  # pixels allowed movement between frames for the A4 co
 BINARY_BLOCK_SIZE = 31  # for adaptive threshold; must be odd
 BINARY_C = 7            # for adaptive threshold
 MIN_OBJECT_AREA_MM2 = 300.0  # ignore tiny specks (in mm^2 after warp -> converted to px^2 inside code)
+ENABLE_ADAPTIVE_THRESHOLD = True
 
 # Shape classification
 CIRCULARITY_CUTOFF = 0.80  # > => circle-like
