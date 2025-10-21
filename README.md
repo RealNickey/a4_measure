@@ -7,6 +7,8 @@ Measure the dimensions of simple objects (rectangles and circles) placed on an A
 - Real‑time detection of an A4 sheet as the size reference (210mm × 297mm).
 - Automatically stops the live stream once both A4 and an object are stably detected, then processes a single **good frame** for precise measurements.
 - Supports **rectangles** and **circles** (diameter/width/height in millimeters).
+- **Manual distance measurement mode**: Click two points to measure the distance between them, with zoom support.
+- **Manual shape selection modes**: Draw rectangles or circles to detect shapes in specific regions.
 - Robust perspective correction and mm-per-pixel accuracy using A4 true dimensions.
 - Fast path with optional **GPU acceleration** if OpenCV CUDA is available.
 - Keyboard workflow: After showing results, **press any key** to resume scanning.
@@ -31,7 +33,12 @@ python main.py
 1. Place an **A4 sheet** flat in view.
 2. Put a **single object** (rectangle-like or circle-like) fully inside the sheet boundary.
 3. The program will lock onto a stable frame, stop the stream, and print/draw the measurements.
-4. Press **any key** in the window to continue scanning again.
+4. **Interactive modes** (press 'M' to cycle through):
+   - **AUTO mode**: Hover and click on automatically detected shapes to inspect them.
+   - **MANUAL RECT mode**: Click and drag to select a rectangular region for shape detection.
+   - **MANUAL CIRCLE mode**: Click and drag to select a circular region for shape detection.
+   - **MANUAL DISTANCE mode**: Click two points to measure the distance between them. Scroll mouse wheel to zoom in/out. Press 'C' to clear all measurements.
+5. Press **any key** in the window to continue scanning again (or ESC to exit).
 
 ### Notes & Tips
 - Good lighting and clear contrast between the object and the A4 background improve accuracy.
