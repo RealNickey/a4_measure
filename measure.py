@@ -398,233 +398,63 @@ def classify_and_measure_manual_selection(image: np.ndarray, selection_rect: Tup
     Returns:
         Measurement result in standard format or None if conversion fails
     """
-    # Validate input parameters
     if shape_result is None:
         print("[WARN] No shape result provided for manual selection conversion")
         return None
-    
-    if "type" not in shape_result:
-        print("[WARN] Shape result missing required 'type' field")
+
+    contour = shape_result.get("contour")
+    if contour is None or len(contour) == 0:
+        print("[WARN] Manual selection result missing contour data")
         return None
-    
-    shape_type = shape_result["type"]
-    
-    # Validate scaling factors before attempting conversion
+
     validation_result = _validate_scaling_factors(mm_per_px_x, mm_per_px_y)
     if not validation_result["valid"]:
         print(f"[ERROR] Invalid scaling factors for manual selection: {', '.join(validation_result['errors'])}")
         print("[ERROR] Cannot convert manual selection without valid A4 calibration.")
         return None
-    
-    # Log warnings if any
+
     for warning in validation_result.get("warnings", []):
         print(f"[WARN] {warning}")
-    
+
     try:
-        if shape_type == "circle":
-            return _convert_manual_circle_to_measurement(shape_result, mm_per_px_x, selection_rect)
-        elif shape_type == "rectangle":
-            return _convert_manual_rectangle_to_measurement(shape_result, mm_per_px_x, mm_per_px_y, selection_rect)
-        else:
-            print(f"[WARN] Unsupported shape type for manual selection: {shape_type}")
+        measurement = classify_and_measure(contour, mm_per_px_x, mm_per_px_y, detection_method="manual")
+        if measurement is None:
+            print("[WARN] Unable to classify manual selection contour")
             return None
-            
+
+        # Preserve additional metadata for downstream features
+        measurement["selection_rect"] = selection_rect
+        measurement["confidence_score"] = float(shape_result.get("confidence_score", measurement.get("confidence_score", 0.0)))
+        measurement["manual_mode"] = shape_result.get("mode", shape_result.get("type", "manual"))
+        contour_np = np.asarray(contour, dtype=np.int32)
+        measurement["contour"] = contour_np
+
+        if measurement["type"] == "circle":
+            radius_px = float(measurement.get("radius_px", 0.0))
+            measurement["radius_px"] = radius_px
+            measurement["radius"] = radius_px
+        elif measurement["type"] == "rectangle":
+            if "hit_contour" in measurement:
+                hit = np.asarray(measurement["hit_contour"], dtype=np.int32)
+                measurement["contour"] = hit
+                measurement["box"] = hit.reshape(-1, 2)
+            elif "box" in measurement:
+                measurement["box"] = np.asarray(measurement["box"], dtype=np.int32).reshape(-1, 2)
+            else:
+                measurement["box"] = contour_np.reshape(-1, 2)
+
+        return measurement
+
     except ValueError as e:
-        # Enhanced error handling with specific guidance for calibration issues
         print(f"[ERROR] Scaling factor validation failed: {e}")
         if "calibration" in str(e).lower() or "A4" in str(e):
             print("[ERROR] This indicates A4 paper calibration is invalid.")
             print("[ERROR] Please ensure A4 paper is properly positioned and detected before using manual selection.")
         return None
     except Exception as e:
-        # Maintain existing shape detection error handling - ensure graceful degradation
         print(f"[ERROR] Error converting manual selection to measurement: {e}")
         print("[ERROR] Manual selection processing failed, but shape detection quality is preserved.")
         return None
-
-
-def _convert_manual_circle_to_measurement(shape_result: Dict[str, Any], mm_per_px_x: float, 
-                                        selection_rect: Tuple[int, int, int, int]) -> Dict[str, Any]:
-    """
-    Convert manual circle selection to standard measurement format.
-    
-    Args:
-        shape_result: Circle result from shape snapping engine
-        mm_per_px_x: Millimeters per pixel conversion factor in X direction
-        selection_rect: Original selection rectangle
-        
-    Returns:
-        Circle measurement in standard format
-        
-    Raises:
-        ValueError: If scaling factor is invalid (None, zero, or negative)
-    """
-    # Enhanced input validation for scaling factors with clear error messages
-    if mm_per_px_x is None:
-        raise ValueError("Scaling factor mm_per_px_x cannot be None - A4 calibration may have failed")
-    if not isinstance(mm_per_px_x, (int, float)):
-        raise ValueError(f"Scaling factor mm_per_px_x must be a number, got {type(mm_per_px_x)}")
-    if mm_per_px_x <= 0:
-        raise ValueError(f"Scaling factor mm_per_px_x must be positive, got {mm_per_px_x} - check A4 calibration")
-    if not (0.01 <= mm_per_px_x <= 100.0):  # Reasonable range check
-        raise ValueError(f"Scaling factor mm_per_px_x out of reasonable range (0.01-100.0): {mm_per_px_x} - A4 calibration may be incorrect")
-    
-    try:
-        center = shape_result["center"]
-        radius_px = shape_result.get("radius", shape_result.get("dimensions", [0])[0])
-        
-        # Validate shape data
-        if not isinstance(radius_px, (int, float)) or radius_px <= 0:
-            raise ValueError(f"Invalid circle radius: {radius_px}")
-        
-        # Calculate measurements - apply mm_per_px_x scaling factor to convert pixel diameter to millimeter diameter
-        diameter_px = 2.0 * radius_px
-        diameter_mm_raw = diameter_px * mm_per_px_x  # Use mm_per_px_x scaling factor for proper conversion
-        # Round to nearest millimeter for consistent precision with Auto Mode (Requirement 1.5, 5.4)
-        diameter_mm = round(diameter_mm_raw)
-        area_px = np.pi * (radius_px ** 2)
-        
-        # Ensure radius_px remains in pixels for rendering purposes
-        radius_px = float(radius_px)  # Keep as pixels for rendering
-        
-        # Create hit testing contour
-        hit_contour = create_hit_testing_contour('circle', center=center, radius_px=radius_px)
-        
-        return {
-            "type": "circle",
-            "diameter_mm": diameter_mm,
-            "center": center,
-            "radius_px": radius_px,  # Remains in pixels for rendering purposes
-            "hit_contour": hit_contour,
-            "area_px": area_px,
-            "inner": False,
-            "detection_method": "manual",
-            "selection_rect": selection_rect,
-            "confidence_score": shape_result.get("confidence_score", 0.0),
-            "manual_mode": shape_result.get("mode", "manual_circle")
-        }
-        
-    except KeyError as e:
-        raise ValueError(f"Missing required shape data for circle conversion: {e}")
-    except Exception as e:
-        raise ValueError(f"Error converting manual circle to measurement: {e}")
-
-
-def _convert_manual_rectangle_to_measurement(shape_result: Dict[str, Any], mm_per_px_x: float, 
-                                           mm_per_px_y: float, selection_rect: Tuple[int, int, int, int]) -> Dict[str, Any]:
-    """
-    Convert manual rectangle selection to standard measurement format.
-    
-    Args:
-        shape_result: Rectangle result from shape snapping engine
-        mm_per_px_x: Millimeters per pixel in X direction
-        mm_per_px_y: Millimeters per pixel in Y direction
-        selection_rect: Original selection rectangle
-        
-    Returns:
-        Rectangle measurement in standard format
-        
-    Raises:
-        ValueError: If scaling factors are invalid (None, zero, or negative)
-    """
-    # Enhanced input validation for scaling factors with clear error messages
-    if mm_per_px_x is None:
-        raise ValueError("Scaling factor mm_per_px_x cannot be None - A4 calibration may have failed")
-    if not isinstance(mm_per_px_x, (int, float)):
-        raise ValueError(f"Scaling factor mm_per_px_x must be a number, got {type(mm_per_px_x)}")
-    if mm_per_px_x <= 0:
-        raise ValueError(f"Scaling factor mm_per_px_x must be positive, got {mm_per_px_x} - check A4 calibration")
-    if not (0.01 <= mm_per_px_x <= 100.0):  # Reasonable range check
-        raise ValueError(f"Scaling factor mm_per_px_x out of reasonable range (0.01-100.0): {mm_per_px_x} - A4 calibration may be incorrect")
-    
-    if mm_per_px_y is None:
-        raise ValueError("Scaling factor mm_per_px_y cannot be None - A4 calibration may have failed")
-    if not isinstance(mm_per_px_y, (int, float)):
-        raise ValueError(f"Scaling factor mm_per_px_y must be a number, got {type(mm_per_px_y)}")
-    if mm_per_px_y <= 0:
-        raise ValueError(f"Scaling factor mm_per_px_y must be positive, got {mm_per_px_y} - check A4 calibration")
-    if not (0.01 <= mm_per_px_y <= 100.0):  # Reasonable range check
-        raise ValueError(f"Scaling factor mm_per_px_y out of reasonable range (0.01-100.0): {mm_per_px_y} - A4 calibration may be incorrect")
-    
-    try:
-        # Get dimensions from shape result
-        if "width" in shape_result and "height" in shape_result:
-            width_px = shape_result["width"]
-            height_px = shape_result["height"]
-        elif "dimensions" in shape_result:
-            width_px, height_px = shape_result["dimensions"]
-        else:
-            # Fallback: calculate from contour
-            contour = shape_result.get("contour")
-            if contour is not None:
-                rect = cv2.minAreaRect(contour)
-                width_px, height_px = rect[1]
-            else:
-                raise ValueError("Cannot determine rectangle dimensions from shape result")
-        
-        # Validate dimensions
-        if not isinstance(width_px, (int, float)) or width_px <= 0:
-            raise ValueError(f"Invalid rectangle width: {width_px}")
-        if not isinstance(height_px, (int, float)) or height_px <= 0:
-            raise ValueError(f"Invalid rectangle height: {height_px}")
-        
-        # Normalize width < height for consistency
-        width_px = min(width_px, height_px)
-        height_px = max(width_px, height_px)
-        
-        # Apply axis-specific scaling for accurate rectangular measurements
-        # Apply mm_per_px_x to width conversion and mm_per_px_y to height conversion
-        width_mm_raw = width_px * mm_per_px_x
-        height_mm_raw = height_px * mm_per_px_y
-        # Round to nearest millimeter for consistent precision with Auto Mode (Requirement 1.5, 5.4)
-        width_mm = round(width_mm_raw)
-        height_mm = round(height_mm_raw)
-        
-        # Get or create box points - ensure box coordinates remain in pixels for rendering purposes
-        if "box" in shape_result:
-            box = shape_result["box"]
-        elif "contour" in shape_result:
-            rect = cv2.minAreaRect(shape_result["contour"])
-            box = cv2.boxPoints(rect).astype(int)
-        else:
-            # Create box from center and dimensions
-            center = shape_result.get("center", (0, 0))
-            cx, cy = center
-            hw, hh = width_px / 2, height_px / 2
-            box = np.array([
-                [cx - hw, cy - hh],
-                [cx + hw, cy - hh],
-                [cx + hw, cy + hh],
-                [cx - hw, cy + hh]
-            ], dtype=int)
-        
-        # Ensure box coordinates remain in pixels for rendering purposes
-        box = box.astype(int)  # Keep box coordinates in pixels for rendering
-        
-        # Calculate area in pixels
-        area_px = cv2.contourArea(box) if len(box) > 2 else width_px * height_px
-        
-        # Create hit testing contour
-        hit_contour = create_hit_testing_contour('rectangle', box=box)
-        
-        return {
-            "type": "rectangle",
-            "width_mm": width_mm,
-            "height_mm": height_mm,
-            "box": box,
-            "hit_contour": hit_contour,
-            "area_px": area_px,
-            "inner": False,
-            "detection_method": "manual",
-            "selection_rect": selection_rect,
-            "confidence_score": shape_result.get("confidence_score", 0.0),
-            "manual_mode": shape_result.get("mode", "manual_rectangle")
-        }
-        
-    except KeyError as e:
-        raise ValueError(f"Missing required shape data for rectangle conversion: {e}")
-    except Exception as e:
-        raise ValueError(f"Error converting manual rectangle to measurement: {e}")
 
 
 def _validate_scaling_factors(mm_per_px_x: float, mm_per_px_y: float) -> Dict[str, Any]:

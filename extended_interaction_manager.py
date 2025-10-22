@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Any, Tuple, Callable
 from interaction_manager import InteractionManager
 from selection_mode import SelectionMode, ModeManager
 from manual_selection_engine import ManualSelectionEngine
+from measure import classify_and_measure_manual_selection
 from shape_snapping_engine import ShapeSnappingEngine
 from enhanced_contour_analyzer import EnhancedContourAnalyzer
 from selection_overlay import SelectionOverlay
@@ -351,14 +352,11 @@ class ExtendedInteractionManager(InteractionManager):
         if self.window_content_width <= 0 or self.window_content_height <= 0:
             return None
 
-        norm_x = adj_x / self.window_content_width
-        norm_y = adj_y / self.window_content_height
-
         if self.base_display_width <= 0 or self.base_display_height <= 0:
             return None
 
-        img_x = norm_x * (self.base_display_width - 1)
-        img_y = norm_y * (self.base_display_height - 1)
+        img_x = adj_x * (self.base_display_width / float(self.window_content_width))
+        img_y = adj_y * (self.base_display_height / float(self.window_content_height))
 
         if self.mode_manager.is_manual_distance_mode() and self.zoom_scale > 1.0:
             x1, y1, zoom_w, zoom_h = self.zoom_roi
@@ -682,24 +680,43 @@ class ExtendedInteractionManager(InteractionManager):
             )
             
             if shape_result is not None:
-                self.last_manual_result = shape_result
+                measurement_result = classify_and_measure_manual_selection(
+                    self.warped_image,
+                    selection_rect,
+                    shape_result,
+                    self.mm_per_px_x,
+                    self.mm_per_px_y,
+                )
+
+                if measurement_result is None:
+                    print("[WARN] Manual selection classified a shape but measurement conversion failed")
+                    return
+
+                self.last_manual_result = measurement_result
                 self.show_shape_confirmation = True
                 self.confirmation_timer = 0
                 
-                # Print shape information
-                if shape_result["type"] == "circle":
-                    print(f"[SUCCESS] Detected circle - Center: {shape_result['center']}, "
-                          f"Radius: {shape_result['radius']:.1f}, "
-                          f"Confidence: {shape_result['confidence_score']:.2f}")
-                elif shape_result["type"] == "rectangle":
-                    print(f"[SUCCESS] Detected rectangle - Center: {shape_result['center']}, "
-                          f"Size: {shape_result['width']:.1f} x {shape_result['height']:.1f}, "
-                          f"Confidence: {shape_result['confidence_score']:.2f}")
-                
+                # Print measurement information in millimetres
+                if measurement_result["type"] == "circle":
+                    diameter_mm = measurement_result.get("diameter_mm", 0.0)
+                    center = measurement_result.get("center")
+                    confidence = measurement_result.get("confidence_score", 0.0)
+                    print(
+                        f"[SUCCESS] Detected circle - Center: {center}, "
+                        f"Diameter: {diameter_mm:.1f} mm, Confidence: {confidence:.2f}"
+                    )
+                elif measurement_result["type"] == "rectangle":
+                    width_mm = measurement_result.get("width_mm", 0.0)
+                    height_mm = measurement_result.get("height_mm", 0.0)
+                    confidence = measurement_result.get("confidence_score", 0.0)
+                    print(
+                        f"[SUCCESS] Detected rectangle - Size: {width_mm:.1f} x {height_mm:.1f} mm, "
+                        f"Confidence: {confidence:.2f}"
+                    )
+
                 # Call selection callback if provided (for integration with measurement system)
                 if self.selection_callback:
-                    # Convert manual result to format compatible with existing callback
-                    self._call_selection_callback_for_manual_result(shape_result)
+                    self._call_selection_callback_for_manual_result(measurement_result)
                     
             else:
                 print(f"[INFO] No suitable {shape_type} found in selection area")
@@ -744,12 +761,8 @@ class ExtendedInteractionManager(InteractionManager):
         Args:
             shape_result: Manual shape detection result
         """
-        # For manual selections, we don't have a shape index in the original shapes list
-        # Instead, we pass None as the index and include the manual result in a temporary shapes list
-        manual_shapes = [shape_result]
-        
         if self.selection_callback:
-            self.selection_callback(0, manual_shapes)  # Index 0 for the manual result
+            self.selection_callback(None, shape_result)
     
     def get_current_mode(self) -> SelectionMode:
         """
