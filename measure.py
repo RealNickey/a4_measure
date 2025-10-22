@@ -128,73 +128,91 @@ def create_shape_data(measurement_result, contour=None):
     
     return shape_data
 
-def classify_and_measure(cnt, mm_per_px_x, mm_per_px_y, detection_method="automatic"):
-    # Compute circularity
+def classify_and_measure(
+    cnt: np.ndarray,
+    mm_per_px_x: float,
+    mm_per_px_y: float,
+    detection_method: str = "automatic",
+    forced_shape_type: Optional[str] = None,
+):
+    """Classify contour geometry and convert to measurement data."""
+
     area = cv2.contourArea(cnt)
     if area <= 0:
         return None
 
     peri = cv2.arcLength(cnt, True)
-    circularity = 4.0 * np.pi * area / (peri*peri + 1e-9)
+    circularity = 0.0
+    if peri > 0:
+        circularity = 4.0 * np.pi * area / (peri * peri + 1e-9)
 
-    # Create hit testing contour from the original contour
     hit_contour = cnt.reshape(-1, 1, 2).astype(np.int32)
 
-    if circularity >= CIRCULARITY_CUTOFF:
-        # Circle-like
+    shape_type: Optional[str] = None
+    if forced_shape_type is not None:
+        shape_type = forced_shape_type.lower()
+
+    if shape_type not in {"circle", "rectangle"}:
+        shape_type = "circle" if circularity >= CIRCULARITY_CUTOFF else "rectangle"
+
+    if shape_type == "circle":
         (x, y), radius = cv2.minEnclosingCircle(cnt)
-        center = (int(x), int(y))
+        if radius <= 0:
+            return None
+
+        center = (int(round(x)), int(round(y)))
         diameter_px = 2.0 * radius
-        diameter_mm_raw = diameter_px * mm_per_px_x  # assume isotropic scale
-        # Round to nearest millimeter for consistent precision (Requirement 1.5, 5.4)
-        diameter_mm = round(diameter_mm_raw)
-        
-        # Create circular hit contour for better hit testing
-        angles = np.linspace(0, 2*np.pi, 36, endpoint=False)
-        circle_points = np.array([(int(center[0] + radius * np.cos(a)),
-                                  int(center[1] + radius * np.sin(a))) for a in angles])
+        diameter_mm = round(diameter_px * mm_per_px_x)
+
+        angles = np.linspace(0, 2 * np.pi, 36, endpoint=False)
+        circle_points = np.array(
+            [
+                (
+                    int(center[0] + radius * np.cos(a)),
+                    int(center[1] + radius * np.sin(a)),
+                )
+                for a in angles
+            ]
+        )
         hit_contour = circle_points.reshape(-1, 1, 2).astype(np.int32)
-        
+
         return {
             "type": "circle",
             "diameter_mm": diameter_mm,
             "center": center,
-            "radius_px": radius,
+            "radius_px": float(radius),
             "hit_contour": hit_contour,
-            "area_px": area,
+            "area_px": float(area),
             "inner": False,
-            "detection_method": detection_method
+            "detection_method": detection_method,
         }
-    else:
-        # Rectangle-like using minAreaRect
-        rect = cv2.minAreaRect(cnt)  # ((cx,cy), (w,h), angle)
+
+    if shape_type == "rectangle":
+        rect = cv2.minAreaRect(cnt)
         (wpx, hpx) = rect[1]
         if wpx < 1 or hpx < 1:
             return None
-        # Normalize width<height for consistency
+
         width_px = min(wpx, hpx)
         height_px = max(wpx, hpx)
-        width_mm_raw = width_px * mm_per_px_x
-        height_mm_raw = height_px * mm_per_px_y
-        # Round to nearest millimeter for consistent precision (Requirement 1.5, 5.4)
-        width_mm = round(width_mm_raw)
-        height_mm = round(height_mm_raw)
+        width_mm = round(width_px * mm_per_px_x)
+        height_mm = round(height_px * mm_per_px_y)
+
         box = cv2.boxPoints(rect).astype(int)
-        
-        # Use the box points as hit contour for rectangles
         hit_contour = box.reshape(-1, 1, 2).astype(np.int32)
 
-        # Optional right-angle sanity (not strictly enforced)
         return {
             "type": "rectangle",
-            "width_mm": width_mm,
-            "height_mm": height_mm,
+            "width_mm": float(width_mm),
+            "height_mm": float(height_mm),
             "box": box,
             "hit_contour": hit_contour,
-            "area_px": area,
+            "area_px": float(area),
             "inner": False,
-            "detection_method": detection_method
+            "detection_method": detection_method,
         }
+
+    raise ValueError(f"Unsupported shape type: {shape_type}")
 
 def annotate_result(a4_bgr, result, mm_per_px):
     # Backward-compatible single-result annotation
@@ -417,7 +435,17 @@ def classify_and_measure_manual_selection(image: np.ndarray, selection_rect: Tup
         print(f"[WARN] {warning}")
 
     try:
-        measurement = classify_and_measure(contour, mm_per_px_x, mm_per_px_y, detection_method="manual")
+        forced_type = shape_result.get("type")
+        if isinstance(forced_type, str):
+            forced_type = forced_type.lower()
+
+        measurement = classify_and_measure(
+            contour,
+            mm_per_px_x,
+            mm_per_px_y,
+            detection_method="manual",
+            forced_shape_type=forced_type,
+        )
         if measurement is None:
             print("[WARN] Unable to classify manual selection contour")
             return None
