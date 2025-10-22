@@ -86,6 +86,22 @@ class ExtendedInteractionManager(InteractionManager):
             int(self.warped_image.shape[1] / 2),
             int(self.warped_image.shape[0] / 2)
         )
+        h_img, w_img = self.warped_image.shape[:2]
+        self.zoom_roi: Tuple[int, int, int, int] = (0, 0, w_img, h_img)
+
+        # Display/window mapping state
+        self.base_display_width = w_img
+        self.base_display_height = h_img
+        self.window_content_width = self.display_size[0]
+        self.window_content_height = self.display_size[1]
+        self.window_offset_x = 0
+        self.window_offset_y = 0
+        self.window_scale_x = w_img / max(1, self.window_content_width)
+        self.window_scale_y = h_img / max(1, self.window_content_height)
+
+        # Allow manual engine to reuse coordinate mapping
+        self.manual_engine.set_coordinate_transform(self._display_to_original_coords)
+        self.manual_engine.display_scale = 1.0
         
         # Keyboard shortcuts
         self.key_mode_cycle = ord('m')  # M key for mode cycling
@@ -116,9 +132,54 @@ class ExtendedInteractionManager(InteractionManager):
         display_image = self.render_with_manual_overlays()
         if display_image is None:
             return
-        display = self._to_display(display_image)
+        self.base_display_height, self.base_display_width = display_image.shape[:2]
+        display = self._prepare_display_image(display_image)
         cv2.imshow(self.window_name, display)
         cv2.waitKey(1)
+
+    def _prepare_display_image(self, image: np.ndarray) -> np.ndarray:
+        """Resize image to current window size while tracking coordinate mapping."""
+        target_w, target_h = self.display_size
+        if self.window_name:
+            try:
+                _, _, win_w, win_h = cv2.getWindowImageRect(self.window_name)
+                if win_w > 0 and win_h > 0:
+                    target_w = win_w
+                    target_h = win_h
+            except Exception:
+                pass
+
+        img_h, img_w = image.shape[:2]
+        scale = min(target_w / img_w, target_h / img_h) if img_w > 0 and img_h > 0 else 1.0
+        if scale <= 0:
+            scale = 1.0
+        disp_w = max(1, int(round(img_w * scale)))
+        disp_h = max(1, int(round(img_h * scale)))
+
+        resized = image if (disp_w == img_w and disp_h == img_h) else cv2.resize(image, (disp_w, disp_h), interpolation=cv2.INTER_LINEAR)
+
+        self.window_content_width = disp_w
+        self.window_content_height = disp_h
+        self.window_offset_x = max(0, (target_w - disp_w) // 2)
+        self.window_offset_y = max(0, (target_h - disp_h) // 2)
+        self.window_scale_x = img_w / float(disp_w) if disp_w > 0 else 1.0
+        self.window_scale_y = img_h / float(disp_h) if disp_h > 0 else 1.0
+
+        if disp_w == target_w and disp_h == target_h:
+            return resized
+
+        channels = 1 if len(image.shape) == 2 else image.shape[2]
+        canvas_shape = (target_h, target_w) if channels == 1 else (target_h, target_w, channels)
+        canvas = np.zeros(canvas_shape, dtype=image.dtype)
+        y0 = self.window_offset_y
+        x0 = self.window_offset_x
+        y1 = y0 + disp_h
+        x1 = x0 + disp_w
+        if channels == 1:
+            canvas[y0:y1, x0:x1] = resized
+        else:
+            canvas[y0:y1, x0:x1, :] = resized
+        return canvas
 
     def _clamp_zoom_center(self, x: int, y: int) -> Tuple[int, int]:
         """Clamp zoom center coordinates to keep them within image bounds."""
@@ -129,10 +190,12 @@ class ExtendedInteractionManager(InteractionManager):
 
     def _apply_zoom_if_needed(self, image: np.ndarray) -> np.ndarray:
         """Apply zoom to the provided image when manual distance mode is active."""
+        h, w = image.shape[:2]
+
         if not self.mode_manager.is_manual_distance_mode() or self.zoom_scale <= 1.0:
+            self.zoom_roi = (0, 0, w, h)
             return image
 
-        h, w = image.shape[:2]
         zoom_w = max(20, int(round(w / self.zoom_scale)))
         zoom_h = max(20, int(round(h / self.zoom_scale)))
 
@@ -145,6 +208,7 @@ class ExtendedInteractionManager(InteractionManager):
         cropped = image[y1:y2, x1:x2]
         if cropped.size == 0:
             return image
+        self.zoom_roi = (x1, y1, zoom_w, zoom_h)
         zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
         return zoomed
 
@@ -233,9 +297,13 @@ class ExtendedInteractionManager(InteractionManager):
             int(self.warped_image.shape[1] / 2),
             int(self.warped_image.shape[0] / 2)
         )
+        h_img, w_img = self.warped_image.shape[:2]
+        self.zoom_roi = (0, 0, w_img, h_img)
 
     def _handle_manual_distance_event(self, event: int, x: int, y: int, flags: int) -> bool:
         """Handle mouse events specific to manual distance mode."""
+        if x is None or y is None:
+            return False
         handled = False
 
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -272,6 +340,40 @@ class ExtendedInteractionManager(InteractionManager):
             handled = True
 
         return handled
+
+    def _display_to_original_coords(self, display_x: int, display_y: int) -> Optional[Tuple[int, int]]:
+        """Convert window coordinates to original image coordinates (handles zoom/letterbox)."""
+        adj_x = display_x - self.window_offset_x
+        adj_y = display_y - self.window_offset_y
+        if adj_x < 0 or adj_y < 0 or adj_x >= self.window_content_width or adj_y >= self.window_content_height:
+            return None
+
+        if self.window_content_width <= 0 or self.window_content_height <= 0:
+            return None
+
+        norm_x = adj_x / self.window_content_width
+        norm_y = adj_y / self.window_content_height
+
+        if self.base_display_width <= 0 or self.base_display_height <= 0:
+            return None
+
+        img_x = norm_x * (self.base_display_width - 1)
+        img_y = norm_y * (self.base_display_height - 1)
+
+        if self.mode_manager.is_manual_distance_mode() and self.zoom_scale > 1.0:
+            x1, y1, zoom_w, zoom_h = self.zoom_roi
+            denom_x = max(1, self.base_display_width - 1)
+            denom_y = max(1, self.base_display_height - 1)
+            orig_x = x1 + (img_x / denom_x) * max(1, zoom_w - 1)
+            orig_y = y1 + (img_y / denom_y) * max(1, zoom_h - 1)
+        else:
+            orig_x = img_x
+            orig_y = img_y
+
+        h, w = self.warped_image.shape[:2]
+        orig_x = int(round(max(0, min(w - 1, orig_x))))
+        orig_y = int(round(max(0, min(h - 1, orig_y))))
+        return orig_x, orig_y
     
     def handle_key_press(self, key: int) -> bool:
         """
@@ -307,6 +409,8 @@ class ExtendedInteractionManager(InteractionManager):
                     int(self.warped_image.shape[1] / 2),
                     int(self.warped_image.shape[0] / 2)
                 )
+                h_img, w_img = self.warped_image.shape[:2]
+                self.zoom_roi = (0, 0, w_img, h_img)
 
             print(f"[INFO] Mode switched from {old_mode.value} to {new_mode.value}")
 
@@ -424,9 +528,10 @@ class ExtendedInteractionManager(InteractionManager):
 
         # Manual rectangle/circle selection overlays
         if self.mode_manager.is_manual_mode():
-            selection_rect = self.manual_engine.get_display_selection_rect()
+            selection_rect = self.manual_engine.get_current_selection_rect()
             if selection_rect is not None:
-                result = self.selection_overlay.render_selection_rectangle(result, selection_rect, active=True)
+                x, y, w, h = selection_rect
+                result = self.selection_overlay.render_selection_rectangle(result, (int(x), int(y), int(w), int(h)), active=True)
 
             if self.show_shape_confirmation and self.last_manual_result is not None:
                 try:
@@ -481,11 +586,9 @@ class ExtendedInteractionManager(InteractionManager):
         """
         needs_render = False
 
-        if self.display_scale <= 0:
-            return
-
-        orig_x = int(x / self.display_scale)
-        orig_y = int(y / self.display_scale)
+        coord = self._display_to_original_coords(x, y)
+        orig_x = coord[0] if coord is not None else None
+        orig_y = coord[1] if coord is not None else None
 
         if self.mode_manager.is_manual_distance_mode():
             needs_render = self._handle_manual_distance_event(event, orig_x, orig_y, flags)
@@ -500,13 +603,13 @@ class ExtendedInteractionManager(InteractionManager):
                 needs_render = False
             else:
                 # Allow automatic hover in manual mode when not actively selecting
-                if event == cv2.EVENT_MOUSEMOVE:
+                if event == cv2.EVENT_MOUSEMOVE and coord is not None:
                     needs_render = self.handle_mouse_move(orig_x, orig_y)
         else:
             # Handle automatic mode events (original behavior)
-            if event == cv2.EVENT_MOUSEMOVE:
+            if event == cv2.EVENT_MOUSEMOVE and coord is not None:
                 needs_render = self.handle_mouse_move(orig_x, orig_y)
-            elif event == cv2.EVENT_LBUTTONDOWN:
+            elif event == cv2.EVENT_LBUTTONDOWN and coord is not None:
                 needs_render = self.handle_mouse_click(orig_x, orig_y)
         
         # Re-render immediately for better responsiveness
@@ -620,30 +723,18 @@ class ExtendedInteractionManager(InteractionManager):
             Shape result with display coordinates
         """
         result = shape_result.copy()
-        
-        # Transform center coordinates
+
         if "center" in result:
-            orig_x, orig_y = result["center"]
-            display_x = int(orig_x * self.display_scale)
-            display_y = int(orig_y * self.display_scale)
-            result["center"] = (display_x, display_y)
-        
-        # Transform radius for circles
-        if result["type"] == "circle" and "radius" in result:
-            result["radius"] = result["radius"] * self.display_scale
-        
-        # Transform dimensions for rectangles
-        if result["type"] == "rectangle":
-            if "width" in result and "height" in result:
-                result["width"] = result["width"] * self.display_scale
-                result["height"] = result["height"] * self.display_scale
-        
-        # Transform contour if present
-        if "contour" in result and result["contour"] is not None:
-            contour = result["contour"].copy()
-            contour = (contour * self.display_scale).astype(np.int32)
-            result["contour"] = contour
-        
+            cx, cy = result["center"]
+            result["center"] = (int(round(cx)), int(round(cy)))
+
+        if result.get("type") == "circle" and "radius" in result:
+            result["radius"] = float(result["radius"])
+
+        if result.get("type") == "rectangle" and "contour" in result and result["contour"] is not None:
+            contour = np.asarray(result["contour"], dtype=np.float32)
+            result["contour"] = np.round(contour).astype(np.int32)
+
         return result
     
     def _call_selection_callback_for_manual_result(self, shape_result: Dict[str, Any]) -> None:
