@@ -219,6 +219,17 @@ def annotate_result(a4_bgr, result, mm_per_px):
     return annotate_results(a4_bgr, [result], mm_per_px)
 
 def annotate_results(a4_bgr, results, mm_per_px):
+    for res in results:
+        if res["type"] == "circle":
+            center = res.get("center")
+            print(f"[AUTO] Circle at {center} | Diameter: {res['diameter_mm']:.0f} mm")
+        else:
+            cx = int(np.mean(res["box"][:, 0]))
+            cy = int(np.mean(res["box"][:, 1]))
+            print(
+                f"[AUTO] Rectangle at approx center ({cx}, {cy}) | "
+                f"Width: {res['width_mm']:.0f} mm | Height: {res['height_mm']:.0f} mm"
+            )
     out = a4_bgr.copy()
     # Color palette for multiple objects
     colors = [
@@ -251,6 +262,7 @@ def annotate_results(a4_bgr, results, mm_per_px):
                           (text_org[0] + ts[0] + 6, text_org[1] + 6),
                           (255, 255, 255), -1)
             draw_text(out, text_inside, text_org, (0, 0, 0), 0.9, 2)
+            print(f"[AUTO] Circle at {center} | Diameter: {res['diameter_mm']:.0f} mm")
         else:
             box = res["box"]
             cv2.drawContours(out, [box], 0, color, 3)
@@ -274,6 +286,8 @@ def annotate_results(a4_bgr, results, mm_per_px):
                           (text_org[0] + ts[0] + 6, text_org[1] + 6),
                           (255, 255, 255), -1)
             draw_text(out, text_inside, text_org, (0, 0, 0), 0.9, 2)
+            print(f"[AUTO] Rectangle at approx center ({cx}, {cy}) | "
+                f"Width: {res['width_mm']:.0f} mm | Height: {res['height_mm']:.0f} mm")
         idx += 1
     return out
 
