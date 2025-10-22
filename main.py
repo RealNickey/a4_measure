@@ -134,13 +134,15 @@ def run_photo_mode(photo_path: str) -> None:
         warped_image=warped,
         window_name=window_name,
         enable_performance_optimization=True,
+        mm_per_px=(mm_per_px_x, mm_per_px_y),
     )
 
     print("\n[PHOTO MODE] Controls:")
     print("• Hover to preview shapes in AUTO mode")
-    print("• Press 'M' to cycle AUTO → MANUAL_RECT → MANUAL_CIRCLE")
-    print("• Drag to analyze a region in manual modes")
-    print("• Press 'C' to toggle manual confirmation, ESC to exit")
+    print("• Press 'M' to cycle AUTO → MANUAL_RECT → MANUAL_CIRCLE → MANUAL_DISTANCE")
+    print("• Drag to analyze a region in manual shape modes")
+    print("• MANUAL_DISTANCE: click two points to measure, scroll to zoom (1x-5x), 'C' clears, right-click cancels")
+    print("• Press 'C' in shape modes to toggle confirmation, ESC to exit")
 
     try:
         while True:

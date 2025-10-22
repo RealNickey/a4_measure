@@ -8,6 +8,8 @@ and manual selection workflows with seamless mode switching.
 Requirements addressed: 3.1, 3.4, 4.1, 4.2
 """
 
+import math
+
 import cv2
 import numpy as np
 from typing import Dict, List, Optional, Any, Tuple, Callable
@@ -18,6 +20,7 @@ from manual_selection_engine import ManualSelectionEngine
 from shape_snapping_engine import ShapeSnappingEngine
 from enhanced_contour_analyzer import EnhancedContourAnalyzer
 from selection_overlay import SelectionOverlay
+import config
 
 
 class ExtendedInteractionManager(InteractionManager):
@@ -34,7 +37,9 @@ class ExtendedInteractionManager(InteractionManager):
     
     def __init__(self, shapes: List[Dict[str, Any]], warped_image: np.ndarray,
                  display_height: int = 800, hover_snap_distance_mm: float = 10.0,
-                 enable_performance_optimization: bool = True):
+                 enable_performance_optimization: bool = True,
+                 mm_per_px_x: Optional[float] = None,
+                 mm_per_px_y: Optional[float] = None):
         """
         Initialize the extended interaction manager.
         
@@ -47,7 +52,13 @@ class ExtendedInteractionManager(InteractionManager):
         """
         # Initialize parent class
         super().__init__(shapes, warped_image, display_height, 
-                        hover_snap_distance_mm, enable_performance_optimization)
+                hover_snap_distance_mm, enable_performance_optimization)
+
+        # Calibration scale factors (default to config PX_PER_MM if not provided)
+        px_per_mm = getattr(config, "PX_PER_MM", 1.0) or 1.0
+        default_mm_per_px = 1.0 / float(px_per_mm)
+        self.mm_per_px_x = mm_per_px_x if mm_per_px_x and mm_per_px_x > 0 else default_mm_per_px
+        self.mm_per_px_y = mm_per_px_y if mm_per_px_y and mm_per_px_y > 0 else default_mm_per_px
         
         # Initialize manual selection components
         self.mode_manager = ModeManager()
@@ -63,11 +74,23 @@ class ExtendedInteractionManager(InteractionManager):
         self.show_shape_confirmation = False
         self.confirmation_timer = 0
         self.confirmation_duration = 60  # frames to show confirmation
+
+        # Manual distance measurement state
+        self.distance_measurements: List[Tuple[Tuple[int, int], Tuple[int, int], float]] = []
+        self.distance_point1: Optional[Tuple[int, int]] = None
+        self.distance_point2: Optional[Tuple[int, int]] = None
+        self.min_zoom_scale = 1.0
+        self.max_zoom_scale = 5.0
+        self.zoom_scale = 1.0
+        self.zoom_center = (
+            int(self.warped_image.shape[1] / 2),
+            int(self.warped_image.shape[0] / 2)
+        )
         
         # Keyboard shortcuts
         self.key_mode_cycle = ord('m')  # M key for mode cycling
-        self.key_cancel_selection = 27  # ESC key for canceling selection
-        self.key_toggle_confirmation = ord('c')  # C key to toggle confirmation display
+        self.key_cancel_selection = 27  # ESC key for canceling selection / measurement
+        self.key_toggle_confirmation = ord('c')  # C key to toggle confirmation / clear distances
         
         # Setup manual selection callbacks
         self._setup_manual_selection_callbacks()
@@ -82,6 +105,173 @@ class ExtendedInteractionManager(InteractionManager):
             complete_callback=self._on_manual_selection_complete,
             cancel_callback=self._on_manual_selection_cancel
         )
+
+    # ------------------------------------------------------------------
+    # Internal helpers for rendering and manual distance mode
+    # ------------------------------------------------------------------
+    def _refresh_display(self) -> None:
+        """Trigger a display refresh using the current rendering pipeline."""
+        if not self.window_name:
+            return
+        display_image = self.render_with_manual_overlays()
+        if display_image is None:
+            return
+        display = self._to_display(display_image)
+        cv2.imshow(self.window_name, display)
+        cv2.waitKey(1)
+
+    def _clamp_zoom_center(self, x: int, y: int) -> Tuple[int, int]:
+        """Clamp zoom center coordinates to keep them within image bounds."""
+        h, w = self.warped_image.shape[:2]
+        cx = max(0, min(w - 1, x))
+        cy = max(0, min(h - 1, y))
+        return cx, cy
+
+    def _apply_zoom_if_needed(self, image: np.ndarray) -> np.ndarray:
+        """Apply zoom to the provided image when manual distance mode is active."""
+        if not self.mode_manager.is_manual_distance_mode() or self.zoom_scale <= 1.0:
+            return image
+
+        h, w = image.shape[:2]
+        zoom_w = max(20, int(round(w / self.zoom_scale)))
+        zoom_h = max(20, int(round(h / self.zoom_scale)))
+
+        cx, cy = self.zoom_center
+        x1 = max(0, min(cx - zoom_w // 2, w - zoom_w))
+        y1 = max(0, min(cy - zoom_h // 2, h - zoom_h))
+        x2 = x1 + zoom_w
+        y2 = y1 + zoom_h
+
+        cropped = image[y1:y2, x1:x2]
+        if cropped.size == 0:
+            return image
+        zoomed = cv2.resize(cropped, (w, h), interpolation=cv2.INTER_LINEAR)
+        return zoomed
+
+    def _calculate_distance_mm(self, p1: Tuple[int, int], p2: Tuple[int, int]) -> float:
+        """Calculate calibrated distance in millimetres between two points."""
+        dx_mm = (p2[0] - p1[0]) * self.mm_per_px_x
+        dy_mm = (p2[1] - p1[1]) * self.mm_per_px_y
+        return float(math.hypot(dx_mm, dy_mm))
+
+    def _draw_distance_measurements(self, image: np.ndarray) -> None:
+        """Render stored and in-progress distance measurements on the image."""
+        # Completed measurements
+        for p1, p2, dist_mm in self.distance_measurements:
+            cv2.line(image, p1, p2, (0, 255, 255), 2)
+            cv2.circle(image, p1, 5, (0, 255, 255), -1)
+            cv2.circle(image, p2, 5, (0, 255, 255), -1)
+
+            mid_x = (p1[0] + p2[0]) // 2
+            mid_y = (p1[1] + p2[1]) // 2
+            text = f"{dist_mm:.1f}mm"
+            text_size = cv2.getTextSize(text, config.DRAW_FONT, 0.6, 2)[0]
+            text_origin = (mid_x - text_size[0] // 2, mid_y - 10)
+            cv2.rectangle(image,
+                          (text_origin[0] - 5, text_origin[1] - text_size[1] - 5),
+                          (text_origin[0] + text_size[0] + 5, text_origin[1] + 5),
+                          (0, 0, 0), -1)
+            cv2.putText(image, text, text_origin, config.DRAW_FONT, 0.6, (0, 255, 255), 2)
+
+        # Measurement in progress
+        if self.distance_point1 is not None:
+            cv2.circle(image, self.distance_point1, 5, (255, 0, 255), -1)
+            cv2.circle(image, self.distance_point1, 8, (255, 0, 255), 2)
+
+            if self.distance_point2 is not None:
+                cv2.line(image, self.distance_point1, self.distance_point2, (255, 0, 255), 2)
+                cv2.circle(image, self.distance_point2, 5, (255, 0, 255), -1)
+                cv2.circle(image, self.distance_point2, 8, (255, 0, 255), 2)
+
+                dist_mm = self._calculate_distance_mm(self.distance_point1, self.distance_point2)
+                mid_x = (self.distance_point1[0] + self.distance_point2[0]) // 2
+                mid_y = (self.distance_point1[1] + self.distance_point2[1]) // 2
+                text = f"{dist_mm:.1f}mm"
+                text_size = cv2.getTextSize(text, config.DRAW_FONT, 0.6, 2)[0]
+                text_origin = (mid_x - text_size[0] // 2, mid_y - 10)
+                cv2.rectangle(image,
+                              (text_origin[0] - 5, text_origin[1] - text_size[1] - 5),
+                              (text_origin[0] + text_size[0] + 5, text_origin[1] + 5),
+                              (0, 0, 0), -1)
+                cv2.putText(image, text, text_origin, config.DRAW_FONT, 0.6, (255, 0, 255), 2)
+
+    def _get_distance_instructions(self) -> List[str]:
+        """Build instructional text for manual distance mode."""
+        if self.distance_point1 is None:
+            return [
+                "Click first point to start measurement",
+                "Scroll to zoom (1x-5x), press C to clear"
+            ]
+        return [
+            "Click second point to complete measurement",
+            "Right-click cancels current measurement"
+        ]
+
+    def _clear_distance_measurements(self) -> bool:
+        """Clear all stored distance measurements."""
+        cleared = bool(self.distance_measurements) or self.distance_point1 is not None
+        self.distance_measurements.clear()
+        self.distance_point1 = None
+        self.distance_point2 = None
+        return cleared
+
+    def _cancel_active_distance_measurement(self) -> bool:
+        """Cancel the active distance measurement without clearing history."""
+        if self.distance_point1 is None:
+            return False
+        self.distance_point1 = None
+        self.distance_point2 = None
+        return True
+
+    def _reset_distance_mode(self) -> None:
+        """Reset manual distance state and zoom to defaults."""
+        self.distance_point1 = None
+        self.distance_point2 = None
+        self.distance_measurements.clear()
+        self.zoom_scale = 1.0
+        self.zoom_center = (
+            int(self.warped_image.shape[1] / 2),
+            int(self.warped_image.shape[0] / 2)
+        )
+
+    def _handle_manual_distance_event(self, event: int, x: int, y: int, flags: int) -> bool:
+        """Handle mouse events specific to manual distance mode."""
+        handled = False
+
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if self.distance_point1 is None:
+                self.distance_point1 = (x, y)
+                print(f"[DISTANCE] First point set at ({x}, {y})")
+            else:
+                self.distance_point2 = (x, y)
+                dist_mm = self._calculate_distance_mm(self.distance_point1, self.distance_point2)
+                self.distance_measurements.append((self.distance_point1, self.distance_point2, dist_mm))
+                print(f"[DISTANCE] Second point ({x}, {y}) | Distance: {dist_mm:.1f}mm")
+                self.distance_point1 = None
+                self.distance_point2 = None
+            handled = True
+
+        elif event == cv2.EVENT_MOUSEMOVE:
+            if self.distance_point1 is not None:
+                self.distance_point2 = (x, y)
+                handled = True
+
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            if self._cancel_active_distance_measurement():
+                print("[DISTANCE] Measurement cancelled")
+                handled = True
+
+        elif event == cv2.EVENT_MOUSEWHEEL:
+            delta = flags >> 16
+            if delta > 0:
+                self.zoom_scale = min(self.zoom_scale * 1.2, self.max_zoom_scale)
+            else:
+                self.zoom_scale = max(self.zoom_scale / 1.2, self.min_zoom_scale)
+            self.zoom_center = self._clamp_zoom_center(x, y)
+            print(f"[ZOOM] Scale: {self.zoom_scale:.1f}x at ({self.zoom_center[0]}, {self.zoom_center[1]})")
+            handled = True
+
+        return handled
     
     def handle_key_press(self, key: int) -> bool:
         """
@@ -109,36 +299,62 @@ class ExtendedInteractionManager(InteractionManager):
                 self.last_manual_result = None
                 self.show_shape_confirmation = False
             
+            # Reset manual distance state when leaving the mode
+            if old_mode == SelectionMode.MANUAL_DISTANCE and new_mode != SelectionMode.MANUAL_DISTANCE:
+                self._cancel_active_distance_measurement()
+                self.zoom_scale = 1.0
+                self.zoom_center = (
+                    int(self.warped_image.shape[1] / 2),
+                    int(self.warped_image.shape[0] / 2)
+                )
+
             print(f"[INFO] Mode switched from {old_mode.value} to {new_mode.value}")
-            
-            # Force immediate re-render for responsive mode switching
-            if hasattr(self, 'window_name'):
-                display_image = self.render_with_manual_overlays()
-                if display_image is not None:
-                    cv2.imshow(self.window_name, display_image)
-                    cv2.waitKey(1)  # Force immediate display update
-            
+
+            if new_mode == SelectionMode.MANUAL_DISTANCE:
+                print("[INFO] Manual distance mode controls:")
+                print("  - Left click two points to measure distance")
+                print("  - Mouse wheel to zoom (1x-5x)")
+                print("  - Right click cancels current measurement")
+                print("  - Press 'C' to clear stored measurements")
+
+            self._refresh_display()
             return True
-            
+
         elif key == self.key_cancel_selection:
-            # Cancel active manual selection
-            if self.manual_engine.is_selecting():
+            handled = False
+
+            if self.mode_manager.is_manual_distance_mode():
+                handled = self._cancel_active_distance_measurement()
+                if handled:
+                    print("[DISTANCE] Measurement cancelled")
+            elif self.manual_engine.is_selecting():
                 self.manual_engine.cancel_selection()
                 print("[INFO] Manual selection cancelled")
-                return True
+                handled = True
             
-            # Clear shape confirmation
-            if self.show_shape_confirmation:
+            if not handled and self.show_shape_confirmation:
                 self.show_shape_confirmation = False
                 self.last_manual_result = None
                 print("[INFO] Shape confirmation cleared")
-                return True
+                handled = True
+
+            if handled:
+                self._refresh_display()
+            return handled
                 
         elif key == self.key_toggle_confirmation:
-            # Toggle shape confirmation display
+            if self.mode_manager.is_manual_distance_mode():
+                if self._clear_distance_measurements():
+                    print("[DISTANCE] All measurements cleared")
+                    self._refresh_display()
+                    return True
+                return False
+
+            # Toggle shape confirmation display for manual shape mode
             if self.last_manual_result is not None:
                 self.show_shape_confirmation = not self.show_shape_confirmation
                 print(f"[INFO] Shape confirmation {'enabled' if self.show_shape_confirmation else 'disabled'}")
+                self._refresh_display()
                 return True
         
         return False
@@ -184,35 +400,72 @@ class ExtendedInteractionManager(InteractionManager):
             return None
         
         result = base_image.copy()
-        
-        # Render mode indicator (always visible)
-        mode_text = self.mode_manager.get_mode_indicator()
-        result = self.selection_overlay.render_mode_indicator(result, mode_text)
-        
-        # Render manual selection overlays if in manual mode
+        current_mode = self.mode_manager.get_current_mode()
+
+        if current_mode == SelectionMode.MANUAL_DISTANCE:
+            # Draw stored and in-progress measurements before zoom
+            self._draw_distance_measurements(result)
+            result = self._apply_zoom_if_needed(result)
+
+            # Mode indicator with zoom info
+            mode_text = self.mode_manager.get_mode_indicator()
+            result = self.selection_overlay.render_mode_indicator(
+                result,
+                mode_text,
+                additional_info=f"Zoom: {self.zoom_scale:.1f}x"
+            )
+
+            # Instruction overlay
+            instructions = self._get_distance_instructions()
+            if instructions:
+                result = self.selection_overlay.render_instruction_overlay(result, instructions)
+
+            return result
+
+        # Manual rectangle/circle selection overlays
         if self.mode_manager.is_manual_mode():
-            # Render active selection rectangle with high priority for responsiveness
             selection_rect = self.manual_engine.get_display_selection_rect()
             if selection_rect is not None:
                 result = self.selection_overlay.render_selection_rectangle(result, selection_rect, active=True)
-            
-            # Render shape confirmation if available (lower priority)
+
             if self.show_shape_confirmation and self.last_manual_result is not None:
                 try:
-                    # Transform shape result to display coordinates for rendering
                     display_result = self._transform_shape_result_to_display(self.last_manual_result)
                     result = self.selection_overlay.render_shape_confirmation(result, display_result)
-                    
-                    # Update confirmation timer
+
                     self.confirmation_timer += 1
                     if self.confirmation_timer >= self.confirmation_duration:
                         self.show_shape_confirmation = False
                         self.confirmation_timer = 0
                 except Exception as e:
-                    # Don't let confirmation rendering errors break the main rendering
                     print(f"[WARN] Shape confirmation rendering error: {e}")
                     self.show_shape_confirmation = False
-        
+
+        # Render automatic hover/select highlights already baked into base image
+        mode_text = self.mode_manager.get_mode_indicator()
+        result = self.selection_overlay.render_mode_indicator(result, mode_text)
+
+        # Instruction overlay for remaining modes
+        instructions: List[str] = []
+        if current_mode == SelectionMode.AUTO:
+            instructions = [
+                "Hover to preview, click to inspect",
+                "Press 'M' to switch modes"
+            ]
+        elif current_mode == SelectionMode.MANUAL_RECTANGLE:
+            instructions = [
+                "Click and drag to select a rectangle",
+                "Right-click cancels selection"
+            ]
+        elif current_mode == SelectionMode.MANUAL_CIRCLE:
+            instructions = [
+                "Click and drag to select a circle",
+                "Right-click cancels selection"
+            ]
+
+        if instructions:
+            result = self.selection_overlay.render_instruction_overlay(result, instructions)
+
         return result
     
     def _on_mouse_event(self, event: int, x: int, y: int, flags: int, userdata: Any) -> None:
@@ -227,9 +480,18 @@ class ExtendedInteractionManager(InteractionManager):
             userdata: User data (unused)
         """
         needs_render = False
-        
-        # Handle manual selection events first if in manual mode
-        if self.mode_manager.is_manual_mode():
+
+        if self.display_scale <= 0:
+            return
+
+        orig_x = int(x / self.display_scale)
+        orig_y = int(y / self.display_scale)
+
+        if self.mode_manager.is_manual_distance_mode():
+            needs_render = self._handle_manual_distance_event(event, orig_x, orig_y, flags)
+
+        # Handle manual selection events if in rectangle/circle modes
+        elif self.mode_manager.is_manual_mode():
             manual_handled = self.handle_manual_mouse_event(event, x, y, flags, userdata)
             if manual_handled:
                 needs_render = True
@@ -239,20 +501,17 @@ class ExtendedInteractionManager(InteractionManager):
             else:
                 # Allow automatic hover in manual mode when not actively selecting
                 if event == cv2.EVENT_MOUSEMOVE:
-                    needs_render = self.handle_mouse_move(x, y)
+                    needs_render = self.handle_mouse_move(orig_x, orig_y)
         else:
             # Handle automatic mode events (original behavior)
             if event == cv2.EVENT_MOUSEMOVE:
-                needs_render = self.handle_mouse_move(x, y)
+                needs_render = self.handle_mouse_move(orig_x, orig_y)
             elif event == cv2.EVENT_LBUTTONDOWN:
-                needs_render = self.handle_mouse_click(x, y)
+                needs_render = self.handle_mouse_click(orig_x, orig_y)
         
         # Re-render immediately for better responsiveness
-        if needs_render and hasattr(self, 'window_name'):
-            display_image = self.render_with_manual_overlays()
-            if display_image is not None:
-                cv2.imshow(self.window_name, display_image)
-                cv2.waitKey(1)  # Force immediate display update
+        if needs_render:
+            self._refresh_display()
     
     def setup_window(self, window_name: str) -> None:
         """
@@ -269,16 +528,14 @@ class ExtendedInteractionManager(InteractionManager):
         
         print(f"[INFO] Extended interaction window '{window_name}' setup complete")
         print("[INFO] Keyboard shortcuts:")
-        print("  M - Cycle selection mode (AUTO → MANUAL RECT → MANUAL CIRCLE)")
-        print("  ESC - Cancel active selection or clear confirmation")
-        print("  C - Toggle shape confirmation display")
+        print("  M - Cycle selection mode (AUTO → MANUAL RECT → MANUAL CIRCLE → MANUAL DIST)")
+        print("  ESC - Cancel active selection or measurement")
+        print("  C - Toggle confirmation / clear distance measurements")
+        print("  Mouse wheel (MANUAL DIST) - Zoom in/out (1x-5x)")
     
     def show_initial_render(self) -> None:
         """Display the initial rendered state with manual overlays."""
-        if hasattr(self, 'window_name'):
-            display_image = self.render_with_manual_overlays()
-            if display_image is not None:
-                cv2.imshow(self.window_name, display_image)
+        self._refresh_display()
     
     def _on_manual_selection_start(self, x: int, y: int) -> None:
         """
@@ -492,8 +749,9 @@ class ExtendedInteractionManager(InteractionManager):
             self.manual_engine.reset()
             self.last_manual_result = None
             self.show_shape_confirmation = False
+            self._reset_distance_mode()
             
-            print("[INFO] Manual selection components cleaned up")
+            print("[INFO] Manual interaction components cleaned up")
             
         except Exception as e:
             print(f"[WARN] Error during manual selection cleanup: {e}")
@@ -507,7 +765,8 @@ class ExtendedInteractionManager(InteractionManager):
 def create_extended_interaction_manager(shapes: List[Dict[str, Any]], warped_image: np.ndarray,
                                       display_height: int = 800, 
                                       hover_snap_distance_mm: float = 10.0,
-                                      enable_performance_optimization: bool = True) -> ExtendedInteractionManager:
+                                      enable_performance_optimization: bool = True,
+                                      mm_per_px: Optional[Tuple[float, float]] = None) -> ExtendedInteractionManager:
     """
     Create and configure an extended interaction manager with manual selection support.
     
@@ -517,21 +776,33 @@ def create_extended_interaction_manager(shapes: List[Dict[str, Any]], warped_ima
         display_height: Height for the display window
         hover_snap_distance_mm: Distance threshold for hover snapping
         enable_performance_optimization: Enable performance optimizations
+        mm_per_px: Optional tuple of (mm_per_px_x, mm_per_px_y) for calibrated distance
         
     Returns:
         Configured ExtendedInteractionManager instance
     """
     from interaction_manager import default_selection_callback
     
-    manager = ExtendedInteractionManager(shapes, warped_image, display_height, 
-                                       hover_snap_distance_mm, enable_performance_optimization)
+    mm_per_px_x = mm_per_px[0] if mm_per_px else None
+    mm_per_px_y = mm_per_px[1] if mm_per_px else None
+
+    manager = ExtendedInteractionManager(
+        shapes,
+        warped_image,
+        display_height,
+        hover_snap_distance_mm,
+        enable_performance_optimization,
+        mm_per_px_x=mm_per_px_x,
+        mm_per_px_y=mm_per_px_y
+    )
     manager.set_selection_callback(default_selection_callback)
     return manager
 
 
 def setup_extended_interactive_inspect_mode(shapes: List[Dict[str, Any]], warped_image: np.ndarray,
                                           window_name: str = "Extended Inspect Mode",
-                                          enable_performance_optimization: bool = True) -> ExtendedInteractionManager:
+                                          enable_performance_optimization: bool = True,
+                                          mm_per_px: Optional[Tuple[float, float]] = None) -> ExtendedInteractionManager:
     """
     Complete setup for extended interactive inspect mode with manual selection support.
     
@@ -540,6 +811,7 @@ def setup_extended_interactive_inspect_mode(shapes: List[Dict[str, Any]], warped
         warped_image: The warped A4 background image
         window_name: Name for the OpenCV window
         enable_performance_optimization: Enable performance optimizations
+        mm_per_px: Optional tuple of (mm_per_px_x, mm_per_px_y) for calibrated distance
         
     Returns:
         Configured and ready ExtendedInteractionManager instance
@@ -550,8 +822,12 @@ def setup_extended_interactive_inspect_mode(shapes: List[Dict[str, Any]], warped
     valid_shapes = validate_shapes_for_interaction(shapes)
     
     # Create extended interaction manager
-    manager = create_extended_interaction_manager(valid_shapes, warped_image, 
-                                                enable_performance_optimization=enable_performance_optimization)
+    manager = create_extended_interaction_manager(
+        valid_shapes,
+        warped_image,
+        enable_performance_optimization=enable_performance_optimization,
+        mm_per_px=mm_per_px
+    )
     
     # Setup window and display initial state
     manager.setup_window(window_name)
@@ -563,6 +839,6 @@ def setup_extended_interactive_inspect_mode(shapes: List[Dict[str, Any]], warped
     if enable_performance_optimization:
         print("[INFO] Performance optimization enabled for smooth interaction")
     
-    print("[INFO] Extended inspect mode ready - supports both automatic and manual selection")
+    print("[INFO] Extended inspect mode ready - supports automatic, manual shape, and distance measurement modes")
     
     return manager

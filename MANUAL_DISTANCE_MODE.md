@@ -4,7 +4,9 @@
 The Manual Distance Measurement mode allows users to measure distances between any two points on the A4 sheet, with zoom support for precise measurements.
 
 ## How to Access
-1. Run the application: `python main.py`
+1. Run the application:
+  - Live feed: `python main.py`
+  - Photo mode: `python main.py --photo path/to/image.png`
 2. Wait for A4 detection to complete
 3. Press 'M' key to cycle through modes until you reach "MANUAL_DISTANCE"
 

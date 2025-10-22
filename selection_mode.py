@@ -6,7 +6,7 @@ mode switching between automatic detection and manual selection modes.
 """
 
 from enum import Enum
-from typing import Dict, Optional
+from typing import Optional
 
 
 class SelectionMode(Enum):
@@ -14,6 +14,7 @@ class SelectionMode(Enum):
     AUTO = "auto"
     MANUAL_RECTANGLE = "manual_rect"
     MANUAL_CIRCLE = "manual_circle"
+    MANUAL_DISTANCE = "manual_distance"
 
     def __str__(self) -> str:
         """Return string representation of the mode."""
@@ -38,17 +39,19 @@ class ModeManager:
         self.mode_indicators = {
             SelectionMode.AUTO: "AUTO",
             SelectionMode.MANUAL_RECTANGLE: "MANUAL RECT",
-            SelectionMode.MANUAL_CIRCLE: "MANUAL CIRCLE"
+            SelectionMode.MANUAL_CIRCLE: "MANUAL CIRCLE",
+            SelectionMode.MANUAL_DISTANCE: "MANUAL DIST"
         }
         self.mode_cycle_order = [
             SelectionMode.AUTO,
             SelectionMode.MANUAL_RECTANGLE,
-            SelectionMode.MANUAL_CIRCLE
+            SelectionMode.MANUAL_CIRCLE,
+            SelectionMode.MANUAL_DISTANCE
         ]
     
     def cycle_mode(self) -> SelectionMode:
         """
-        Cycle to the next mode in the sequence: AUTO → MANUAL_RECTANGLE → MANUAL_CIRCLE → AUTO.
+        Cycle to the next mode in the sequence: AUTO → MANUAL_RECTANGLE → MANUAL_CIRCLE → MANUAL_DISTANCE → AUTO.
         
         Returns:
             The new current mode after cycling
@@ -104,6 +107,10 @@ class ModeManager:
             True if in AUTO mode, False otherwise
         """
         return self.current_mode == SelectionMode.AUTO
+
+    def is_manual_distance_mode(self) -> bool:
+        """Return True when manual distance measurement mode is active."""
+        return self.current_mode == SelectionMode.MANUAL_DISTANCE
     
     def get_manual_shape_type(self) -> Optional[str]:
         """
@@ -111,7 +118,7 @@ class ModeManager:
         
         Returns:
             "rectangle" for MANUAL_RECTANGLE mode, "circle" for MANUAL_CIRCLE mode,
-            None for AUTO mode
+            None for AUTO or MANUAL_DISTANCE modes
         """
         if self.current_mode == SelectionMode.MANUAL_RECTANGLE:
             return "rectangle"
