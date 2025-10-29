@@ -80,6 +80,7 @@ class ExtendedInteractionManager(InteractionManager):
         self.distance_measurements: List[Tuple[Tuple[int, int], Tuple[int, int], float]] = []
         self.distance_point1: Optional[Tuple[int, int]] = None
         self.distance_point2: Optional[Tuple[int, int]] = None
+        self.distance_cursor: Optional[Tuple[int, int]] = None
         self.min_zoom_scale = 1.0
         self.max_zoom_scale = 5.0
         self.zoom_scale = 1.0
@@ -243,22 +244,13 @@ class ExtendedInteractionManager(InteractionManager):
             cv2.circle(image, self.distance_point1, 5, (255, 0, 255), -1)
             cv2.circle(image, self.distance_point1, 8, (255, 0, 255), 2)
 
-            if self.distance_point2 is not None:
-                cv2.line(image, self.distance_point1, self.distance_point2, (255, 0, 255), 2)
-                cv2.circle(image, self.distance_point2, 5, (255, 0, 255), -1)
-                cv2.circle(image, self.distance_point2, 8, (255, 0, 255), 2)
-
-                dist_mm = self._calculate_distance_mm(self.distance_point1, self.distance_point2)
-                mid_x = (self.distance_point1[0] + self.distance_point2[0]) // 2
-                mid_y = (self.distance_point1[1] + self.distance_point2[1]) // 2
-                text = f"{dist_mm:.1f}mm"
-                text_size = cv2.getTextSize(text, config.DRAW_FONT, 0.6, 2)[0]
-                text_origin = (mid_x - text_size[0] // 2, mid_y - 10)
-                cv2.rectangle(image,
-                              (text_origin[0] - 5, text_origin[1] - text_size[1] - 5),
-                              (text_origin[0] + text_size[0] + 5, text_origin[1] + 5),
-                              (0, 0, 0), -1)
-                cv2.putText(image, text, text_origin, config.DRAW_FONT, 0.6, (255, 0, 255), 2)
+        # Crosshair to guide point placement
+        if self.distance_cursor is not None:
+            cx, cy = self.distance_cursor
+            cross_half = 8
+            color = (255, 0, 255)
+            cv2.line(image, (cx - cross_half, cy), (cx + cross_half, cy), color, 1)
+            cv2.line(image, (cx, cy - cross_half), (cx, cy + cross_half), color, 1)
 
     def _get_distance_instructions(self) -> List[str]:
         """Build instructional text for manual distance mode."""
@@ -293,6 +285,7 @@ class ExtendedInteractionManager(InteractionManager):
         self.distance_point1 = None
         self.distance_point2 = None
         self.distance_measurements.clear()
+        self.distance_cursor = None
         self.zoom_scale = 1.0
         self.zoom_center = (
             int(self.warped_image.shape[1] / 2),
@@ -304,26 +297,30 @@ class ExtendedInteractionManager(InteractionManager):
     def _handle_manual_distance_event(self, event: int, x: int, y: int, flags: int) -> bool:
         """Handle mouse events specific to manual distance mode."""
         if x is None or y is None:
+            if self.distance_cursor is not None:
+                self.distance_cursor = None
+                return True
             return False
+
+        self.distance_cursor = (x, y)
         handled = False
 
         if event == cv2.EVENT_LBUTTONDOWN:
             if self.distance_point1 is None:
                 self.distance_point1 = (x, y)
+                self.distance_point2 = None
                 print(f"[DISTANCE] First point set at ({x}, {y})")
             else:
-                self.distance_point2 = (x, y)
-                dist_mm = self._calculate_distance_mm(self.distance_point1, self.distance_point2)
-                self.distance_measurements.append((self.distance_point1, self.distance_point2, dist_mm))
+                second_point = (x, y)
+                dist_mm = self._calculate_distance_mm(self.distance_point1, second_point)
+                self.distance_measurements.append((self.distance_point1, second_point, dist_mm))
                 print(f"[DISTANCE] Second point ({x}, {y}) | Distance: {dist_mm:.1f}mm")
                 self.distance_point1 = None
                 self.distance_point2 = None
             handled = True
 
         elif event == cv2.EVENT_MOUSEMOVE:
-            if self.distance_point1 is not None:
-                self.distance_point2 = (x, y)
-                handled = True
+            handled = True
 
         elif event == cv2.EVENT_RBUTTONDOWN:
             if self._cancel_active_distance_measurement():
@@ -413,6 +410,7 @@ class ExtendedInteractionManager(InteractionManager):
             print(f"[INFO] Mode switched from {old_mode.value} to {new_mode.value}")
 
             if new_mode == SelectionMode.MANUAL_DISTANCE:
+                self.distance_cursor = self.zoom_center
                 print("[INFO] Manual distance mode controls:")
                 print("  - Left click two points to measure distance")
                 print("  - Mouse wheel to zoom (1x-5x)")
