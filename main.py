@@ -134,13 +134,15 @@ def run_photo_mode(photo_path: str) -> None:
         warped_image=warped,
         window_name=window_name,
         enable_performance_optimization=True,
+        mm_per_px=(mm_per_px_x, mm_per_px_y),
     )
 
     print("\n[PHOTO MODE] Controls:")
     print("• Hover to preview shapes in AUTO mode")
-    print("• Press 'M' to cycle AUTO → MANUAL_RECT → MANUAL_CIRCLE")
-    print("• Drag to analyze a region in manual modes")
-    print("• Press 'C' to toggle manual confirmation, ESC to exit")
+    print("• Press 'M' to cycle AUTO → MANUAL_RECT → MANUAL_CIRCLE → MANUAL_DISTANCE")
+    print("• Drag to analyze a region in manual shape modes")
+    print("• MANUAL_DISTANCE: click two points to measure, scroll to zoom (1x-5x), 'C' clears, right-click cancels")
+    print("• Press 'C' in shape modes to toggle confirmation, ESC to exit")
 
     try:
         while True:
@@ -287,14 +289,23 @@ def run_live_mode(camera_url: str | None) -> None:
 
                 # Enhanced interaction mode with manual selection support
                 # Manual selection mode management
-                current_mode = "AUTO"  # AUTO, MANUAL_RECT, MANUAL_CIRCLE
-                mode_cycle = ["AUTO", "MANUAL_RECT", "MANUAL_CIRCLE"]
+                current_mode = "AUTO"  # AUTO, MANUAL_RECT, MANUAL_CIRCLE, MANUAL_DISTANCE
+                mode_cycle = ["AUTO", "MANUAL_RECT", "MANUAL_CIRCLE", "MANUAL_DISTANCE"]
                 
                 # Manual selection state
                 manual_selecting = False
                 manual_start_point = None
                 manual_current_point = None
                 manual_selection_rect = None
+                
+                # Manual distance measurement state
+                distance_point1 = None
+                distance_point2 = None
+                distance_measurements = []  # List of (point1, point2, distance_mm) tuples
+                
+                # Zoom state
+                zoom_scale = 1.0
+                zoom_center = None  # (x, y) in original image coordinates
                 
                 def cycle_mode():
                     nonlocal current_mode
@@ -529,6 +540,59 @@ def run_live_mode(camera_url: str | None) -> None:
                                  (text_x + text_size[0] + 3, text_y + 3), (0, 0, 0), -1)
                     cv2.putText(img, info_text, (text_x, text_y), DRAW_FONT, 0.5, color, 1)
 
+                def draw_distance_measurements(img):
+                    """Draw all distance measurements and current measurement in progress"""
+                    # Draw completed measurements
+                    for i, (p1, p2, dist_mm) in enumerate(distance_measurements):
+                        # Draw line
+                        cv2.line(img, p1, p2, (0, 255, 255), 2)
+                        
+                        # Draw endpoints
+                        cv2.circle(img, p1, 5, (0, 255, 255), -1)
+                        cv2.circle(img, p2, 5, (0, 255, 255), -1)
+                        
+                        # Draw distance text at midpoint
+                        mid_x = (p1[0] + p2[0]) // 2
+                        mid_y = (p1[1] + p2[1]) // 2
+                        text = f"{dist_mm:.1f}mm"
+                        text_size = cv2.getTextSize(text, DRAW_FONT, 0.6, 2)[0]
+                        text_x = mid_x - text_size[0] // 2
+                        text_y = mid_y - 10
+                        
+                        # Background for text
+                        cv2.rectangle(img, (text_x - 5, text_y - text_size[1] - 5),
+                                    (text_x + text_size[0] + 5, text_y + 5), (0, 0, 0), -1)
+                        cv2.putText(img, text, (text_x, text_y), DRAW_FONT, 0.6, (0, 255, 255), 2)
+                    
+                    # Draw current measurement in progress
+                    if distance_point1 is not None:
+                        # Draw first point
+                        cv2.circle(img, distance_point1, 5, (255, 0, 255), -1)
+                        cv2.circle(img, distance_point1, 8, (255, 0, 255), 2)
+                        
+                        # Draw line to current mouse position if second point is being selected
+                        if distance_point2 is not None:
+                            cv2.line(img, distance_point1, distance_point2, (255, 0, 255), 2)
+                            cv2.circle(img, distance_point2, 5, (255, 0, 255), -1)
+                            cv2.circle(img, distance_point2, 8, (255, 0, 255), 2)
+                            
+                            # Calculate and show distance
+                            dx = (distance_point2[0] - distance_point1[0]) * mm_per_px_x
+                            dy = (distance_point2[1] - distance_point1[1]) * mm_per_px_y
+                            dist_mm = np.sqrt(dx**2 + dy**2)
+                            
+                            mid_x = (distance_point1[0] + distance_point2[0]) // 2
+                            mid_y = (distance_point1[1] + distance_point2[1]) // 2
+                            text = f"{dist_mm:.1f}mm"
+                            text_size = cv2.getTextSize(text, DRAW_FONT, 0.6, 2)[0]
+                            text_x = mid_x - text_size[0] // 2
+                            text_y = mid_y - 10
+                            
+                            # Background for text
+                            cv2.rectangle(img, (text_x - 5, text_y - text_size[1] - 5),
+                                        (text_x + text_size[0] + 5, text_y + 5), (0, 0, 0), -1)
+                            cv2.putText(img, text, (text_x, text_y), DRAW_FONT, 0.6, (255, 0, 255), 2)
+
                 def find_shape_at_point(x, y, distance_threshold=15):
                     """Find shape at or near the given point, with snapping"""
                     # First check for exact containment
@@ -571,8 +635,14 @@ def run_live_mode(camera_url: str | None) -> None:
                     if manual_selection_rect is not None:
                         draw_manual_selection_rect(base, manual_selection_rect)
                     
+                    # Draw distance measurements in MANUAL_DISTANCE mode
+                    if current_mode == "MANUAL_DISTANCE":
+                        draw_distance_measurements(base)
+                    
                     # Mode indicator in top-right corner
                     mode_text = f"MODE: {current_mode}"
+                    if current_mode == "MANUAL_DISTANCE":
+                        mode_text += f" | Zoom: {zoom_scale:.1f}x"
                     text_size = cv2.getTextSize(mode_text, DRAW_FONT, 0.7, 2)[0]
                     mode_x = base.shape[1] - text_size[0] - 20
                     mode_y = 30
@@ -594,6 +664,11 @@ def run_live_mode(camera_url: str | None) -> None:
                                 text = f"Selected: Rectangle ({sh['width_mm']:.0f}x{sh['height_mm']:.0f}mm)"
                         else:
                             text = "Hover to preview, click to inspect. Press 'M' to switch modes."
+                    elif current_mode == "MANUAL_DISTANCE":
+                        if distance_point1 is None:
+                            text = "Click first point | Scroll to zoom | 'C' to clear all | 'M' to switch modes"
+                        else:
+                            text = "Click second point | Right-click to cancel | Scroll to zoom"
                     else:
                         if manual_selecting:
                             text = f"Drag to select area for {current_mode.replace('MANUAL_', '').lower()} detection"
@@ -611,6 +686,7 @@ def run_live_mode(camera_url: str | None) -> None:
                 cv2.resizeWindow(window_name, display_width, display_height)
 
                 def on_mouse(event, x, y, flags, userdata):
+                    nonlocal distance_point1, distance_point2, zoom_scale, zoom_center
                     # Convert to original coordinates
                     ox = int(x / scale)
                     oy = int(y / scale)
@@ -643,6 +719,55 @@ def run_live_mode(camera_url: str | None) -> None:
                             else:
                                 print("[SELECTED] None (click on background)")
                             
+                            needs_redraw = True
+                    
+                    elif current_mode == "MANUAL_DISTANCE":
+                        # Manual distance measurement mode
+                        if event == cv2.EVENT_LBUTTONDOWN:
+                            if distance_point1 is None:
+                                # Set first point
+                                distance_point1 = (ox, oy)
+                                print(f"[DISTANCE] First point: ({ox}, {oy})")
+                                needs_redraw = True
+                            else:
+                                # Set second point and calculate distance
+                                distance_point2 = (ox, oy)
+                                dx = (distance_point2[0] - distance_point1[0]) * mm_per_px_x
+                                dy = (distance_point2[1] - distance_point1[1]) * mm_per_px_y
+                                dist_mm = np.sqrt(dx**2 + dy**2)
+                                
+                                # Store measurement
+                                distance_measurements.append((distance_point1, distance_point2, dist_mm))
+                                print(f"[DISTANCE] Second point: ({ox}, {oy}) | Distance: {dist_mm:.1f}mm")
+                                
+                                # Reset for next measurement
+                                distance_point1 = None
+                                distance_point2 = None
+                                needs_redraw = True
+                        
+                        elif event == cv2.EVENT_MOUSEMOVE:
+                            # Update preview line if first point is set
+                            if distance_point1 is not None:
+                                distance_point2 = (ox, oy)
+                                needs_redraw = True
+                        
+                        elif event == cv2.EVENT_RBUTTONDOWN:
+                            # Cancel current measurement
+                            if distance_point1 is not None:
+                                print("[DISTANCE] Measurement cancelled")
+                                distance_point1 = None
+                                distance_point2 = None
+                                needs_redraw = True
+                        
+                        elif event == cv2.EVENT_MOUSEWHEEL:
+                            # Zoom in/out
+                            delta = flags >> 16
+                            if delta > 0:
+                                zoom_scale = min(zoom_scale * 1.2, 5.0)
+                            else:
+                                zoom_scale = max(zoom_scale / 1.2, 1.0)
+                            zoom_center = (ox, oy)
+                            print(f"[ZOOM] Scale: {zoom_scale:.1f}x at ({ox}, {oy})")
                             needs_redraw = True
                     
                     else:
@@ -696,8 +821,13 @@ def run_live_mode(camera_url: str | None) -> None:
                 print("Controls:")
                 print("• Hover over shapes to preview (AUTO mode)")
                 print("• Click shapes to inspect (AUTO mode)")
-                print("• Press 'M' to cycle between AUTO → MANUAL RECT → MANUAL CIRCLE modes")
-                print("• In manual modes, click and drag to select areas")
+                print("• Press 'M' to cycle between AUTO → MANUAL RECT → MANUAL CIRCLE → MANUAL DISTANCE modes")
+                print("• In MANUAL RECT/CIRCLE modes, click and drag to select areas")
+                print("• In MANUAL DISTANCE mode:")
+                print("  - Click two points to measure distance between them")
+                print("  - Scroll mouse wheel to zoom in/out")
+                print("  - Press 'C' to clear all distance measurements")
+                print("  - Right-click to cancel current measurement")
                 print("• Right-click to cancel manual selections")
                 print("• Press ESC to exit, any other key to resume scanning")
                 print()
@@ -714,6 +844,11 @@ def run_live_mode(camera_url: str | None) -> None:
                             if manual_selecting:
                                 cancel_manual_selection()
                             
+                            # Reset distance measurement state when switching modes
+                            if current_mode == "MANUAL_DISTANCE":
+                                distance_point1 = None
+                                distance_point2 = None
+                            
                             # Cycle to next mode
                             cycle_mode()
                             
@@ -722,6 +857,18 @@ def run_live_mode(camera_url: str | None) -> None:
                             disp = cv2.resize(img, (display_width, display_height))
                             cv2.imshow(window_name, disp)
                             cv2.waitKey(1)  # Force display update
+                        elif k == ord('c') or k == ord('C'):  # C key for clearing measurements
+                            if current_mode == "MANUAL_DISTANCE":
+                                distance_measurements.clear()
+                                distance_point1 = None
+                                distance_point2 = None
+                                print("[DISTANCE] All measurements cleared")
+                                
+                                # Force immediate re-render
+                                img = render()
+                                disp = cv2.resize(img, (display_width, display_height))
+                                cv2.imshow(window_name, disp)
+                                cv2.waitKey(1)  # Force display update
                         else:
                             # Other keys exit inspect mode
                             exit_flag = False

@@ -38,7 +38,7 @@ def render_selection_overlay(image, engine, mode_manager):
     
     # Draw current selection rectangle if selecting
     if engine.is_selecting():
-        rect = engine.get_display_selection_rect()
+        rect = engine.get_current_selection_rect()
         if rect:
             x, y, w, h = rect
             # Draw selection rectangle with semi-transparent overlay

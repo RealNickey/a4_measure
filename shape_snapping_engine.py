@@ -502,25 +502,19 @@ class ShapeSnappingEngine:
         
         return candidates
     
-    def _select_best_candidate(self, candidates: List[ShapeCandidate], 
-                              selection_rect: Tuple[int, int, int, int]) -> Optional[ShapeCandidate]:
-        """
-        Select the best candidate from the list based on total score.
-        
-        Args:
-            candidates: List of shape candidates
-            selection_rect: Selection rectangle
-            
-        Returns:
-            Best candidate or None if no valid candidates
-        """
+    def _select_best_candidate(
+        self,
+        candidates: List[ShapeCandidate],
+        selection_rect: Tuple[int, int, int, int],
+    ) -> Optional[ShapeCandidate]:
+        """Select the largest candidate within the selection area."""
+
         if not candidates:
             return None
-        
-        # Sort by total score (highest first)
-        candidates.sort(key=lambda c: c.total_score, reverse=True)
-        
-        # Return the best candidate
+
+        # Prefer the largest area candidate; use score as secondary tie-breaker
+        candidates.sort(key=lambda c: (c.area, c.total_score), reverse=True)
+
         return candidates[0]
     
     def _calculate_circularity(self, contour: np.ndarray) -> float:

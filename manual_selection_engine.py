@@ -190,6 +190,9 @@ class ManualSelectionEngine:
         self.selection_timeout_ms = getattr(config, 'MANUAL_SELECTION_TIMEOUT_MS', 5000)
         self.enable_validation = getattr(config, 'ENABLE_SELECTION_VALIDATION', True)
         
+        # Coordinate transformation callback (display -> original)
+        self.coordinate_transform: Optional[Callable[[int, int], Optional[Tuple[int, int]]]] = None
+
         # Callbacks for external integration
         self.selection_start_callback: Optional[Callable[[int, int], None]] = None
         self.selection_update_callback: Optional[Callable[[int, int], None]] = None
@@ -225,6 +228,10 @@ class ManualSelectionEngine:
         self.selection_complete_callback = complete_callback
         self.selection_cancel_callback = cancel_callback
     
+    def set_coordinate_transform(self, transform: Optional[Callable[[int, int], Optional[Tuple[int, int]]]]) -> None:
+        """Set a custom coordinate transformation for display-to-original mapping."""
+        self.coordinate_transform = transform
+
     def start_selection(self, display_x: int, display_y: int) -> None:
         """
         Start a new manual selection operation.
@@ -234,7 +241,10 @@ class ManualSelectionEngine:
             display_y: Y coordinate in display window
         """
         # Transform to original coordinates
-        orig_x, orig_y = self._transform_display_to_original(display_x, display_y)
+        coords = self._transform_display_to_original(display_x, display_y)
+        if coords is None:
+            return
+        orig_x, orig_y = coords
         
         # Start selection in original coordinate space
         self.selection_state.start_selection(orig_x, orig_y)
@@ -255,7 +265,10 @@ class ManualSelectionEngine:
             return
         
         # Transform to original coordinates
-        orig_x, orig_y = self._transform_display_to_original(display_x, display_y)
+        coords = self._transform_display_to_original(display_x, display_y)
+        if coords is None:
+            return
+        orig_x, orig_y = coords
         
         # Update selection in original coordinate space
         self.selection_state.update_selection(orig_x, orig_y)
@@ -358,27 +371,34 @@ class ManualSelectionEngine:
         """
         if event == cv2.EVENT_LBUTTONDOWN:
             # Start new selection
+            previous_state = self.selection_state.is_selecting
             self.start_selection(display_x, display_y)
-            return True
-            
-        elif event == cv2.EVENT_MOUSEMOVE:
+            started = self.selection_state.is_selecting and not previous_state
+            return started
+
+        if event == cv2.EVENT_MOUSEMOVE:
             # Always update selection during mouse move if left button is pressed
             if flags & cv2.EVENT_FLAG_LBUTTON and self.selection_state.is_selecting:
+                before = self.selection_state.get_current_rect()
                 self.update_selection(display_x, display_y)
-                return True
-            
-        elif event == cv2.EVENT_LBUTTONUP:
+                after = self.selection_state.get_current_rect()
+                return before != after
+            return False
+
+        if event == cv2.EVENT_LBUTTONUP:
             # Complete selection
             if self.selection_state.is_selecting:
                 final_rect = self.complete_selection()
-                return final_rect is not None
-            
-        elif event == cv2.EVENT_RBUTTONDOWN:
+                return True
+            return False
+
+        if event == cv2.EVENT_RBUTTONDOWN:
             # Cancel selection on right click
             if self.selection_state.is_selecting:
                 self.cancel_selection()
                 return True
-        
+            return False
+
         return False
     
     def is_selecting(self) -> bool:
@@ -391,34 +411,8 @@ class ManualSelectionEngine:
         return self.selection_state.is_selecting
     
     def get_current_selection_rect(self) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Get the current selection rectangle in original coordinates.
-        
-        Returns:
-            Current selection rectangle as (x, y, width, height) or None
-        """
+        """Return the current selection rectangle in original coordinates."""
         return self.selection_state.get_current_rect()
-    
-    def get_display_selection_rect(self) -> Optional[Tuple[int, int, int, int]]:
-        """
-        Get the current selection rectangle in display coordinates.
-        
-        Returns:
-            Current selection rectangle as (x, y, width, height) in display space or None
-        """
-        orig_rect = self.selection_state.get_current_rect()
-        if orig_rect is None:
-            return None
-        
-        x, y, w, h = orig_rect
-        
-        # Transform coordinates to display space
-        display_x = int(x * self.display_scale)
-        display_y = int(y * self.display_scale)
-        display_w = int(w * self.display_scale)
-        display_h = int(h * self.display_scale)
-        
-        return (display_x, display_y, display_w, display_h)
     
     def get_selection_info(self) -> Dict[str, Any]:
         """
@@ -494,17 +488,14 @@ class ManualSelectionEngine:
         """Reset the selection engine to initial state."""
         self.selection_state.reset()
     
-    def _transform_display_to_original(self, display_x: int, display_y: int) -> Tuple[int, int]:
-        """
-        Transform display coordinates to original image coordinates.
-        
-        Args:
-            display_x: X coordinate in display window
-            display_y: Y coordinate in display window
-            
-        Returns:
-            (x, y) coordinates in original image space
-        """
+    def _transform_display_to_original(self, display_x: int, display_y: int) -> Optional[Tuple[int, int]]:
+        """Transform display coordinates to original image coordinates."""
+        if self.coordinate_transform is not None:
+            return self.coordinate_transform(display_x, display_y)
+
+        if self.display_scale <= 0:
+            return None
+
         original_x = int(display_x / self.display_scale)
         original_y = int(display_y / self.display_scale)
         return original_x, original_y
